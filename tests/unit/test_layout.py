@@ -126,6 +126,11 @@ def test_discover_hours_all_scope_includes_exo(tmp_path: Path):
     assert "Kitchen" in camera_ids
 
 
+def test_build_camera_registry_rejects_overlap():
+    with pytest.raises(ValueError, match="unique"):
+        build_camera_registry(["Allie", "Kitchen"], ["Kitchen"])
+
+
 def test_discover_hours_skips_novideo(tmp_path: Path):
     video_dir = tmp_path / "main" / "day1" / "Allie" / "video"
     video_dir.mkdir(parents=True)

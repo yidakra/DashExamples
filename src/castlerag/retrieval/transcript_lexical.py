@@ -1,7 +1,7 @@
 """Transcript BM25 retrieval with answer-option and metadata bonus scoring.
 
 BM25 scoring formula (SPEC §4.3):
-  base BM25 score over window text × query
+  base BM25 score over window text x query
   + answer option overlap bonus
   + phrase-match bonus
   + day bonus

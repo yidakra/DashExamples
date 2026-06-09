@@ -20,6 +20,14 @@ SourceType = Literal[
     "aux_video",
 ]
 
+AuxSourceType = Literal[
+    "aux_heartrate",
+    "aux_gaze",
+    "aux_photo",
+    "aux_thermal",
+    "aux_video",
+]
+
 Modality = Literal["video", "image", "text", "audio"]
 CameraType = Literal["ego", "fixed"]
 QuestionRoute = Literal["static_visual", "speech_text", "temporal", "mixed"]
@@ -145,7 +153,7 @@ class EventSummaryRecord(BaseModel):
 class AuxRecord(BaseModel):
     """Auxiliary modality record (heartrate, gaze, photo, thermal, auxiliary video)."""
     clip_id: str  # used as record id; named clip_id for schema compatibility
-    source_type: SourceType
+    source_type: AuxSourceType
     modality: Modality
     day: str
     camera_id: Optional[str] = None
@@ -247,7 +255,7 @@ class RerankerOutput(BaseModel):
             if key not in v:
                 raise ValueError(f"support must contain key '{key}'")
             if not 0 <= v[key] <= 4:
-                raise ValueError(f"support['{key}'] must be 0–4, got {v[key]}")
+                raise ValueError(f"support['{key}'] must be 0-4, got {v[key]}")
         return v
 
 

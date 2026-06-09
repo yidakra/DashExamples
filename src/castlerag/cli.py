@@ -26,10 +26,18 @@ console = Console()
 # ---------------------------------------------------------------------------
 
 
+def _default_snellius_path() -> Path:
+    """Resolve snellius.yaml — package-installed copy first, then project root."""
+    pkg_relative = Path(__file__).parent / "configs" / "snellius.yaml"
+    if pkg_relative.exists():
+        return pkg_relative
+    return Path(__file__).parent.parent.parent / "configs" / "snellius.yaml"
+
+
 def _resolve_config(config: Optional[Path], snellius: bool) -> CastleRAGConfig:
     override: Optional[Path] = None
     if snellius:
-        override = Path(__file__).parent.parent.parent / "configs" / "snellius.yaml"
+        override = _default_snellius_path()
     elif config is not None:
         override = config
     return load_config(override_path=override)
@@ -44,12 +52,12 @@ def _resolve_config(config: Optional[Path], snellius: bool) -> CastleRAGConfig:
 def preprocess(
     config: Optional[Path] = typer.Option(None, "--config", "-c", help="Override config YAML"),
     snellius: bool = typer.Option(False, "--snellius", help="Apply configs/snellius.yaml overlay"),
-    day: Optional[int] = typer.Option(None, "--day", help="Process a single day (1–4)"),
+    day: Optional[int] = typer.Option(None, "--day", min=1, max=4, help="Process a single day (1-4)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print actions without writing files"),
 ) -> None:
     """Discover CASTLE files, create 30-second clips, extract 1 fps frames, normalize transcripts."""
     cfg = _resolve_config(config, snellius)
-    days = [day] if day else cfg.dataset.days
+    days = [day] if day is not None else cfg.dataset.days
     console.print(f"[bold]castlerag preprocess[/bold]  days={days}  dry_run={dry_run}")
     console.print(f"  dataset root  : {cfg.dataset.root}")
     console.print(f"  camera scope  : {cfg.dataset.camera_scope}  "
@@ -71,12 +79,13 @@ def embed(
         None, "--modality",
         help="Filter by modality: transcript | video | image | event_summary",
     ),
-    day: Optional[int] = typer.Option(None, "--day"),
+    day: Optional[int] = typer.Option(None, "--day", min=1, max=4),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
     """Encode derived chunks with OmniEmbed (vLLM) and cache embeddings to disk."""
     cfg = _resolve_config(config, snellius)
-    console.print(f"[bold]castlerag embed[/bold]  modality={modality or 'all'}  day={day or 'all'}")
+    console.print(f"[bold]castlerag embed[/bold]  modality={modality or 'all'}  "
+                  f"day={day if day is not None else 'all'}")
     console.print(f"  model   : {cfg.embedding.model}")
     console.print(f"  backend : {cfg.embedding.backend}")
     if dry_run:

@@ -43,6 +43,9 @@ inference = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/castlerag"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"configs" = "castlerag/configs"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"

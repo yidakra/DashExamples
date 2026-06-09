@@ -98,3 +98,18 @@ def test_load_config_with_nonexistent_override():
         pytest.skip("configs/base.yaml not found")
     cfg = load_config(base_path=base_path, override_path="/nonexistent/path.yaml")
     assert cfg.preprocessing.clip_seconds == 30
+
+
+def test_load_config_explicit_missing_base_raises():
+    """Explicit base_path that does not exist must raise FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+        load_config(base_path="/nonexistent/config.yaml")
+
+
+def test_expand_env_vars(tmp_path: Path):
+    """$VAR references in YAML values must be expanded after load."""
+    import os
+    from castlerag.config import _expand_env
+    os.environ["_CR_TEST_VAR"] = "expanded_value"
+    result = _expand_env({"path": "/scratch/$_CR_TEST_VAR/data"})
+    assert "expanded_value" in result["path"]

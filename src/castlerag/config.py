@@ -1,6 +1,7 @@
 """Pydantic config models and YAML loader for CastleRAG."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -156,18 +157,50 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
     return result
 
 
+def _expand_env(obj: Any) -> Any:
+    """Recursively expand $VAR / ${VAR} environment variables in string values."""
+    if isinstance(obj, dict):
+        return {k: _expand_env(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env(v) for v in obj]
+    if isinstance(obj, str):
+        return os.path.expandvars(obj)
+    return obj
+
+
+def _default_base_path() -> Path:
+    """Resolve the default base.yaml location.
+
+    Checks the installed-package location first (wheel install), then falls
+    back to the project-root configs/ directory (editable / dev install).
+    """
+    pkg_relative = Path(__file__).parent / "configs" / "base.yaml"
+    if pkg_relative.exists():
+        return pkg_relative
+    return Path(__file__).parent.parent.parent / "configs" / "base.yaml"
+
+
 def load_config(
     base_path: str | Path | None = None,
     override_path: str | Path | None = None,
 ) -> CastleRAGConfig:
-    """Load config from YAML, merging override on top of base."""
+    """Load config from YAML, merging override on top of base.
+
+    Raises FileNotFoundError if an explicit base_path is given but does not
+    exist (fail-fast for typos).  A missing override_path is silently skipped
+    (it is optional by contract).
+    """
+    explicit_base = base_path is not None
     if base_path is None:
-        pkg_root = Path(__file__).parent.parent.parent
-        base_path = pkg_root / "configs" / "base.yaml"
+        base_path = _default_base_path()
 
     data: Dict[str, Any] = {}
     base_path = Path(base_path)
-    if base_path.exists():
+    if not base_path.exists():
+        if explicit_base:
+            raise FileNotFoundError(f"Config file not found: {base_path}")
+        # Default path missing — proceed with Pydantic defaults
+    else:
         with base_path.open() as f:
             data = yaml.safe_load(f) or {}
 
@@ -178,4 +211,5 @@ def load_config(
                 override_data = yaml.safe_load(f) or {}
             data = _deep_merge(data, override_data)
 
+    data = _expand_env(data)
     return CastleRAGConfig.model_validate(data)

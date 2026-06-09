@@ -44,7 +44,7 @@ The CASTLE 2024 dataset is available on Hugging Face (`castle-challenge/castle20
 Download it to `/data/castle2024` (or set `dataset.root` in `configs/base.yaml`).
 
 Expected layout:
-```
+```text
 /data/castle2024/
   main/
     day{1..4}/
@@ -84,15 +84,17 @@ castlerag smoke-test questions.json --n 5
 Edit `configs/snellius.yaml` to set your account and scratch paths, then:
 
 ```bash
-# Full offline build (submit in order or with --dependency):
+# Submit in dependency order (replace <job_id> with the id returned by sbatch):
 sbatch scripts/slurm/preprocess_main.slurm
-sbatch scripts/slurm/caption_ocr.slurm
-sbatch scripts/slurm/compress_events.slurm
-sbatch scripts/slurm/index_transcripts.slurm
 sbatch scripts/slurm/embed_text.slurm
 sbatch scripts/slurm/embed_video.slurm
 sbatch scripts/slurm/embed_images.slurm
 sbatch scripts/slurm/index_qdrant.slurm
+
+# Not yet implemented — do not submit until the referenced issues are resolved:
+# scripts/slurm/caption_ocr.slurm      (issue #4)
+# scripts/slurm/compress_events.slurm  (issue #4)
+# scripts/slurm/index_transcripts.slurm (issues #5, #6)
 ```
 
 Estimated cost: ~EUR 115–204 for the full ego-only evidence build

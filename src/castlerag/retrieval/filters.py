@@ -59,6 +59,16 @@ def build_filter(
             range=qm.Range(lte=time_range_end_ms),
         ))
 
+    if (
+        time_range_start_ms is not None
+        and time_range_end_ms is not None
+        and time_range_start_ms > time_range_end_ms
+    ):
+        raise ValueError(
+            f"time_range_start_ms ({time_range_start_ms}) must be "
+            f"<= time_range_end_ms ({time_range_end_ms})"
+        )
+
     if not conditions:
         return None
     return qm.Filter(must=conditions)

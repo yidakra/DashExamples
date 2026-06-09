@@ -173,6 +173,18 @@ def test_aux_record_photo():
     assert r.modality == "image"
 
 
+def test_aux_record_rejects_non_aux_source_type():
+    with pytest.raises(Exception):
+        AuxRecord(
+            clip_id="bad",
+            source_type="main_clip",  # not an aux type
+            modality="video",
+            day="day1",
+            absolute_start=1_000,
+            absolute_end=2_000,
+        )
+
+
 # ---------------------------------------------------------------------------
 # RerankerOutput
 # ---------------------------------------------------------------------------

@@ -8,12 +8,11 @@
 #          scripts/slurm/preprocess_aux.slurm
 
 #SBATCH --job-name=castle-preprocess-aux
-#SBATCH --partition=gpu_a100
+#SBATCH --partition=thin
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=18
 #SBATCH --mem=60G
-#SBATCH --gres=gpu:0
 #SBATCH --time=04:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err

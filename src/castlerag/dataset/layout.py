@@ -29,6 +29,12 @@ def build_camera_registry(
     exo_cameras: List[str],
 ) -> Dict[str, CameraInfo]:
     """Build a {camera_id: CameraInfo} registry from config lists."""
+    overlap = set(ego_cameras) & set(exo_cameras)
+    if overlap:
+        raise ValueError(
+            f"Camera IDs must be unique across ego and exo lists; "
+            f"found in both: {sorted(overlap)}"
+        )
     registry: Dict[str, CameraInfo] = {}
     for cam in ego_cameras:
         registry[cam] = CameraInfo(

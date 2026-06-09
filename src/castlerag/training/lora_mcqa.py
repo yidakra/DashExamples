@@ -23,7 +23,7 @@ def check_lora_prerequisites(
     """
     if train_path is None or val_path is None:
         return False
-    return train_path.exists() and val_path.exists()
+    return train_path.is_file() and val_path.is_file()
 
 
 def train_lora(

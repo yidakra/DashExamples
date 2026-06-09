@@ -4,7 +4,9 @@
 # Batch size: 4 (video is the most expensive modality) — see SPEC §3.2.
 # ~48,000 main clips across 10 ego cameras.
 # Estimated: 32–48 GPU-hours total; dominant cost in the offline build.
-# Array: one job per day × camera shard (use --array=1-40 for 10 cameras × 4 days).
+# Array: one job per day (SLURM_ARRAY_TASK_ID maps to day 1-4).
+# To shard further by camera, expand to --array=1-40 and add camera-sharding
+# logic (map task id to day and camera index) once issue #5 is implemented.
 #
 # Usage:
 #   sbatch --account=<account> --dependency=afterok:<preprocess_main_job_id> \
