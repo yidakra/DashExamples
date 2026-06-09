@@ -45,12 +45,12 @@ def compress_clips_to_event(
                 f"participant_id, room); mismatch on {c.clip_id!r}"
             )
 
-    # Validate non-overlapping order
+    # Validate strictly adjacent, non-overlapping order
     for prev, curr in zip(clips_sorted, clips_sorted[1:]):
-        if curr.absolute_start < prev.absolute_end:
+        if curr.absolute_start != prev.absolute_end:
             raise ValueError(
-                f"Clips must be non-overlapping; {curr.clip_id!r} starts "
-                f"({curr.absolute_start}) before {prev.clip_id!r} ends ({prev.absolute_end})"
+                f"Clips must be adjacent; {prev.clip_id!r} ends at "
+                f"{prev.absolute_end} but {curr.clip_id!r} starts at {curr.absolute_start}"
             )
 
     member_clip_ids = [c.clip_id for c in clips_sorted]

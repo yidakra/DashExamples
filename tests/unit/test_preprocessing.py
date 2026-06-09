@@ -451,7 +451,17 @@ def test_compress_clips_rejects_overlapping():
     clips = [_make_clip(i, base + i * 30_000, base + i * 30_000 + 30_000) for i in range(4)]
     # Make clip 1 start before clip 0 ends
     clips[1] = clips[1].model_copy(update={"absolute_start": base + 5_000})
-    with pytest.raises(ValueError, match="non-overlapping"):
+    with pytest.raises(ValueError, match="adjacent"):
+        compress_clips_to_event(clips, "model")
+
+
+def test_compress_clips_rejects_gapped_sequence():
+    base = 1_672_531_200_000
+    clips = [_make_clip(i, base + i * 30_000, base + i * 30_000 + 30_000) for i in range(4)]
+    clips[1] = clips[1].model_copy(
+        update={"absolute_start": base + 35_000, "absolute_end": base + 65_000}
+    )
+    with pytest.raises(ValueError, match="adjacent"):
         compress_clips_to_event(clips, "model")
 
 
@@ -542,12 +552,13 @@ def test_iter_aux_video_short_file(tmp_path: Path):
 
     video_dir = tmp_path / "video" / "Allie"
     video_dir.mkdir(parents=True)
-    (video_dir / "clip.mp4").touch()
+    (video_dir / "2023-01-05_08-00-00_clip.mp4").touch()
 
     with patch("castlerag.preprocess.auxiliary.get_video_duration", return_value=20.0):
         records = list(iter_aux_video_records(tmp_path, "Allie", "day1"))
     assert len(records) == 1
     assert records[0].source_type == "aux_video"
+    assert records[0].absolute_start > 0
 
 
 def test_iter_aux_video_long_file_rewindowed(tmp_path: Path):
@@ -555,11 +566,12 @@ def test_iter_aux_video_long_file_rewindowed(tmp_path: Path):
 
     video_dir = tmp_path / "video" / "Allie"
     video_dir.mkdir(parents=True)
-    (video_dir / "long.mp4").touch()
+    (video_dir / "2023-01-05_08-00-00_long.mp4").touch()
 
     with patch("castlerag.preprocess.auxiliary.get_video_duration", return_value=90.0):
         records = list(iter_aux_video_records(tmp_path, "Allie", "day1"))
     assert len(records) == 3  # 0-30, 30-60, 60-90
+    assert records[1].absolute_start - records[0].absolute_start == 30_000
 
 
 def test_iter_aux_video_skips_ffprobe_failure(tmp_path: Path):
@@ -567,7 +579,7 @@ def test_iter_aux_video_skips_ffprobe_failure(tmp_path: Path):
 
     video_dir = tmp_path / "video" / "Allie"
     video_dir.mkdir(parents=True)
-    (video_dir / "bad.mp4").touch()
+    (video_dir / "2023-01-05_08-00-00_bad.mp4").touch()
 
     with patch("castlerag.preprocess.auxiliary.get_video_duration",
                side_effect=subprocess.CalledProcessError(1, "ffprobe")):
@@ -580,12 +592,24 @@ def test_iter_aux_video_rewindowed_unique_clip_ids(tmp_path: Path):
 
     video_dir = tmp_path / "video" / "Allie"
     video_dir.mkdir(parents=True)
-    (video_dir / "long.mp4").touch()
+    (video_dir / "2023-01-05_08-00-00_long.mp4").touch()
 
     with patch("castlerag.preprocess.auxiliary.get_video_duration", return_value=90.0):
         records = list(iter_aux_video_records(tmp_path, "Allie", "day1"))
     clip_ids = [r.clip_id for r in records]
     assert len(clip_ids) == len(set(clip_ids)), "re-windowed clips must have unique clip_ids"
+
+
+def test_iter_aux_video_skips_missing_timestamp_hint(tmp_path: Path):
+    from castlerag.preprocess.auxiliary import iter_aux_video_records
+
+    video_dir = tmp_path / "video" / "Allie"
+    video_dir.mkdir(parents=True)
+    (video_dir / "clip.mp4").touch()
+
+    with patch("castlerag.preprocess.auxiliary.get_video_duration", return_value=20.0):
+        records = list(iter_aux_video_records(tmp_path, "Allie", "day1"))
+    assert records == []
 
 
 def test_aux_record_ids_do_not_collide_for_same_basename(tmp_path: Path):

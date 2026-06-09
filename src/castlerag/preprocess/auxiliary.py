@@ -152,12 +152,23 @@ def iter_aux_video_records(
 
     Files ≤30 s → one record.  Longer files → re-windowed into 30 s clips.
     Duration is obtained via ffprobe; files where ffprobe fails are skipped.
+    Absolute timestamps must be anchored from a filename timestamp hint. Files
+    without a recoverable timestamp are skipped rather than emitting fake
+    file-relative epoch values.
     """
     video_dir = aux_root / "video" / participant
     if not video_dir.exists():
         return
     for f in sorted(video_dir.rglob("*")):
         if not f.is_file():
+            continue
+        ts_hint = _extract_timestamp_hint(f)
+        if not ts_hint:
+            log.warning("Skipping aux video %s: no timestamp hint in filename", f)
+            continue
+        base_unix_ms = _parse_hint_to_ms(ts_hint)
+        if base_unix_ms <= 0:
+            log.warning("Skipping aux video %s: could not parse timestamp hint %r", f, ts_hint)
             continue
         try:
             duration = get_video_duration(f)
@@ -170,21 +181,23 @@ def iter_aux_video_records(
                 participant=participant,
                 day=day,
                 path=f,
-                absolute_start=0,
-                absolute_end=max(1, int(duration * 1000)),
+                absolute_start=base_unix_ms,
+                absolute_end=max(base_unix_ms + 1, base_unix_ms + int(duration * 1000)),
                 version=version,
             )
         else:
             start = 0.0
             while start < duration:
                 end = min(start + 30.0, duration)
+                abs_start = base_unix_ms + int(start * 1000)
+                abs_end = max(abs_start + 1, base_unix_ms + int(end * 1000))
                 yield _aux_record(
                     source_type="aux_video",
                     participant=participant,
                     day=day,
                     path=f,
-                    absolute_start=int(start * 1000),
-                    absolute_end=max(int(start * 1000) + 1, int(end * 1000)),
+                    absolute_start=abs_start,
+                    absolute_end=abs_end,
                     version=version,
                 )
                 start += 30.0
