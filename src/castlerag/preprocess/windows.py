@@ -42,6 +42,10 @@ def iter_windows(
     window shorter than 1 second is discarded.  Placeholder detection is deferred
     to media.py (requires frame access).
     """
+    if clip_seconds <= 0:
+        raise ValueError("clip_seconds must be > 0")
+    if stride_seconds <= 0:
+        raise ValueError("stride_seconds must be > 0")
     start = 0.0
     clip_index = 0
     while start < duration_seconds:
@@ -74,6 +78,8 @@ def mark_placeholder_windows(
     frame_dir must contain per-clip sub-directories named by clip_index
     (e.g. frame_dir/0/, frame_dir/1/, ...).
     """
+    if not (0.0 <= placeholder_threshold <= 1.0):
+        raise ValueError("placeholder_threshold must be between 0.0 and 1.0")
     from castlerag.preprocess.media import is_placeholder_frame
 
     result: List[VideoWindow] = []

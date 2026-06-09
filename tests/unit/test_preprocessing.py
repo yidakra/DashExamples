@@ -108,9 +108,24 @@ def test_iter_windows_non_default_clip_seconds():
     assert wins[0].end_seconds == 15.0
 
 
+def test_iter_windows_rejects_zero_clip_seconds():
+    with pytest.raises(ValueError, match="clip_seconds"):
+        list(iter_windows(Path("v.mp4"), "Allie", "day1", 8, 60.0, clip_seconds=0))
+
+
+def test_iter_windows_rejects_negative_stride():
+    with pytest.raises(ValueError, match="stride_seconds"):
+        list(iter_windows(Path("v.mp4"), "Allie", "day1", 8, 60.0, stride_seconds=-1))
+
+
 # ---------------------------------------------------------------------------
 # mark_placeholder_windows
 # ---------------------------------------------------------------------------
+
+
+def test_mark_placeholder_windows_invalid_threshold():
+    with pytest.raises(ValueError, match="placeholder_threshold"):
+        mark_placeholder_windows([], Path("/frames"), placeholder_threshold=1.5)
 
 
 def test_mark_placeholder_windows_no_frames(tmp_path: Path):
@@ -236,6 +251,26 @@ def test_merge_into_windows_no_speech_segment():
     wins = merge_into_windows(segs, base, "Allie", "ego", "Allie", None, "day1", 8)
     assert len(wins) == 1
     assert wins[0].has_speech is False
+
+
+def test_merge_into_windows_oversized_single_segment_emitted_alone():
+    """A segment that alone exceeds max_seconds must be emitted as its own window."""
+    segs = [_seg(0.0, 20.0, "Big"), _seg(20.0, 25.0, "Small")]
+    base = 0
+    wins = merge_into_windows(segs, base, "Allie", "ego", "Allie", None, "day1", 8, max_seconds=15.0)
+    # oversized segment (20s > 15s) gets its own window; "Small" in a second window
+    assert len(wins) == 2
+    assert wins[0].transcript_text == "Big"
+    assert wins[1].transcript_text == "Small"
+
+
+def test_merge_into_windows_oversized_does_not_accumulate():
+    """No further text should be added to a window after a single-segment overflow."""
+    segs = [_seg(0.0, 20.0, "X" * 500), _seg(20.0, 21.0, "Y")]
+    base = 0
+    wins = merge_into_windows(segs, base, "Allie", "ego", "Allie", None, "day1", 8, max_chars=384)
+    assert len(wins) == 2
+    assert "Y" not in wins[0].transcript_text
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +435,22 @@ def test_compress_clips_calls_vllm(tmp_path: Path):
     mock_chat.assert_called_once()
 
 
+def test_compress_clips_rejects_mixed_camera():
+    clips = _four_clips()
+    clips[2] = clips[2].model_copy(update={"camera_id": "Bjorn"})
+    with pytest.raises(ValueError, match="mismatch"):
+        compress_clips_to_event(clips, "model")
+
+
+def test_compress_clips_rejects_overlapping():
+    base = 1_672_531_200_000
+    clips = [_make_clip(i, base + i * 30_000, base + i * 30_000 + 30_000) for i in range(4)]
+    # Make clip 1 start before clip 0 ends
+    clips[1] = clips[1].model_copy(update={"absolute_start": base + 5_000})
+    with pytest.raises(ValueError, match="non-overlapping"):
+        compress_clips_to_event(clips, "model")
+
+
 # ---------------------------------------------------------------------------
 # caption_ocr
 # ---------------------------------------------------------------------------
@@ -518,3 +569,31 @@ def test_iter_aux_video_skips_ffprobe_failure(tmp_path: Path):
                side_effect=subprocess.CalledProcessError(1, "ffprobe")):
         records = list(iter_aux_video_records(tmp_path, "Allie", "day1"))
     assert records == []
+
+
+def test_iter_aux_video_rewindowed_unique_clip_ids(tmp_path: Path):
+    from castlerag.preprocess.auxiliary import iter_aux_video_records
+
+    video_dir = tmp_path / "video" / "Allie"
+    video_dir.mkdir(parents=True)
+    (video_dir / "long.mp4").touch()
+
+    with patch("castlerag.preprocess.auxiliary.get_video_duration", return_value=90.0):
+        records = list(iter_aux_video_records(tmp_path, "Allie", "day1"))
+    clip_ids = [r.clip_id for r in records]
+    assert len(clip_ids) == len(set(clip_ids)), "re-windowed clips must have unique clip_ids"
+
+
+def test_iter_photo_records_uses_filename_hint(tmp_path: Path):
+    from castlerag.preprocess.auxiliary import iter_photo_records
+
+    photo_dir = tmp_path / "photo" / "Allie"
+    photo_dir.mkdir(parents=True)
+    # Filename with timestamp, no EXIF
+    (photo_dir / "2023-01-05_08-00-00.jpg").touch()
+
+    with patch("castlerag.preprocess.auxiliary._exif_unix_ms", return_value=None):
+        records = list(iter_photo_records(tmp_path, "Allie", "day1"))
+    assert len(records) == 1
+    # Timestamp should be non-zero since it was parsed from the filename
+    assert records[0].absolute_start > 0

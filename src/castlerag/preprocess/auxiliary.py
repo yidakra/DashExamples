@@ -1,12 +1,15 @@
 """Normalization of auxiliary modalities: heartrate, gaze, photo, thermal, aux video."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Iterator, Optional
 
 from castlerag.dataset.manifest import _extract_timestamp_hint
 from castlerag.preprocess.media import get_video_duration
 from castlerag.schemas import AuxRecord
+
+log = logging.getLogger(__name__)
 
 
 def _aux_record(
@@ -20,7 +23,7 @@ def _aux_record(
     version: str = "0.1.0",
 ) -> AuxRecord:
     return AuxRecord(
-        clip_id=f"{source_type}_{path.stem}",
+        clip_id=f"{source_type}_{path.stem}_{absolute_start:013d}_{absolute_end:013d}",
         source_type=source_type,  # type: ignore[arg-type]
         modality=_modality_for(source_type),
         day=day,
@@ -80,7 +83,10 @@ def iter_photo_records(
     for f in sorted(photo_dir.rglob("*")):
         if not f.is_file():
             continue
-        abs_start = _exif_unix_ms(f) or 0
+        abs_start = _exif_unix_ms(f)
+        if abs_start is None:
+            ts_hint = _extract_timestamp_hint(f)
+            abs_start = _parse_hint_to_ms(ts_hint) if ts_hint else 0
         abs_end = abs_start + 1
         yield _aux_record(
             source_type="aux_photo",
@@ -140,7 +146,8 @@ def iter_aux_video_records(
             continue
         try:
             duration = get_video_duration(f)
-        except Exception:
+        except Exception as exc:
+            log.warning("Skipping aux video %s: duration probe failed (%s)", f, exc)
             continue
         if duration <= 30.0:
             yield _aux_record(

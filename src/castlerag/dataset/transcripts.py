@@ -97,15 +97,22 @@ def merge_into_windows(
         bucket_chars = 0
 
     for seg in segments:
-        span = seg.end - (bucket_start if bucket_start is not None else seg.start)
-        new_chars = bucket_chars + len(seg.text)
-        if bucket_start is not None and (span > max_seconds or new_chars > max_chars):
-            _flush()
+        if bucket_start is not None:
+            span = seg.end - bucket_start
+            new_chars = bucket_chars + len(seg.text)
+            if span > max_seconds or new_chars > max_chars:
+                _flush()
         if bucket_start is None:
             bucket_start = seg.start
         bucket_end = seg.end
         bucket_chars += len(seg.text)
         bucket_segs.append(seg)
+        # If this single segment already exceeds limits, emit immediately so
+        # we never accumulate further into an already-over-limit window.
+        if len(bucket_segs) == 1:
+            span = bucket_end - bucket_start
+            if span > max_seconds or bucket_chars > max_chars:
+                _flush()
 
     _flush()
     return windows

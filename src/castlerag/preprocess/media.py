@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from typing import List
 
+FFMPEG_TIMEOUT_SECONDS = 120
+
 
 def get_video_duration(source_path: Path) -> float:
     """Return video duration in seconds using ffprobe."""
@@ -23,6 +25,7 @@ def get_video_duration(source_path: Path) -> float:
         capture_output=True,
         text=True,
         check=True,
+        timeout=FFMPEG_TIMEOUT_SECONDS,
     )
     return float(result.stdout.strip())
 
@@ -40,6 +43,8 @@ def extract_frames_1fps(
     Frames are named %04d.jpg (1-indexed by ffmpeg).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    for stale in out_dir.glob("*.jpg"):
+        stale.unlink()
     duration = end_seconds - start_seconds
     subprocess.run(
         [
@@ -53,6 +58,7 @@ def extract_frames_1fps(
         ],
         capture_output=True,
         check=True,
+        timeout=FFMPEG_TIMEOUT_SECONDS,
     )
     return sorted(out_dir.glob("*.jpg"))
 
@@ -80,6 +86,7 @@ def extract_subclip(
         ],
         capture_output=True,
         check=True,
+        timeout=FFMPEG_TIMEOUT_SECONDS,
     )
     return out_path
 
@@ -95,6 +102,6 @@ def is_placeholder_frame(frame_path: Path) -> bool:
     from PIL import Image
     import numpy as np
 
-    img = Image.open(frame_path).convert("L")
-    arr = np.array(img, dtype=np.float32)
+    with Image.open(frame_path) as img:
+        arr = np.array(img.convert("L"), dtype=np.float32)
     return float(arr.std()) < 8.0

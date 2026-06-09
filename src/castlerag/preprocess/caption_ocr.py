@@ -24,6 +24,7 @@ def _vllm_chat(
     model: str,
     messages: list,
     max_tokens: int = 256,
+    timeout: float = 120.0,
 ) -> str:
     """Send a chat completion request to a vLLM OpenAI-compatible endpoint."""
     try:
@@ -33,11 +34,14 @@ def _vllm_chat(
             "openai package required for caption/OCR; "
             "pip install castlerag[inference]"
         ) from exc
-    client = OpenAI(base_url=vllm_base_url, api_key="not-needed")
+    client = OpenAI(base_url=vllm_base_url, api_key="not-needed", timeout=timeout)
     resp = client.chat.completions.create(
         model=model, messages=messages, max_tokens=max_tokens
     )
-    return (resp.choices[0].message.content or "").strip()
+    if not resp.choices:
+        return ""
+    content = resp.choices[0].message.content
+    return content.strip() if content else ""
 
 
 def annotate_clip(

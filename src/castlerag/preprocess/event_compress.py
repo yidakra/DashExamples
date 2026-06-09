@@ -35,6 +35,24 @@ def compress_clips_to_event(
     clips_sorted = sorted(clips, key=lambda c: c.absolute_start)
     first = clips_sorted[0]
 
+    # Validate all clips share the same identity fields
+    for c in clips_sorted[1:]:
+        if (c.day, c.camera_id, c.camera_type, c.participant_id, c.room) != (
+            first.day, first.camera_id, first.camera_type, first.participant_id, first.room
+        ):
+            raise ValueError(
+                f"All clips must share the same (day, camera_id, camera_type, "
+                f"participant_id, room); mismatch on {c.clip_id!r}"
+            )
+
+    # Validate non-overlapping order
+    for prev, curr in zip(clips_sorted, clips_sorted[1:]):
+        if curr.absolute_start < prev.absolute_end:
+            raise ValueError(
+                f"Clips must be non-overlapping; {curr.clip_id!r} starts "
+                f"({curr.absolute_start}) before {prev.clip_id!r} ends ({prev.absolute_end})"
+            )
+
     member_clip_ids = [c.clip_id for c in clips_sorted]
     abs_start = clips_sorted[0].absolute_start
     abs_end = clips_sorted[-1].absolute_end
