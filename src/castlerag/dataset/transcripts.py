@@ -21,8 +21,13 @@ def load_raw_segments(path: Path) -> List[TranscriptSegment]:
     """Parse an official CASTLE transcript JSON into raw segments."""
     data = json.loads(path.read_text())
     segments: List[TranscriptSegment] = []
-    for chunk in data.get("chunks", []):
+    for i, chunk in enumerate(data.get("chunks", [])):
         ts = chunk.get("timestamp", [0, 0])
+        if not isinstance(ts, (list, tuple)) or len(ts) < 2:
+            raise ValueError(
+                f"Malformed timestamp in chunk {i} of {path}: "
+                f"expected [start, end], got {ts!r}"
+            )
         segments.append(TranscriptSegment(
             start=float(ts[0]),
             end=float(ts[1]),

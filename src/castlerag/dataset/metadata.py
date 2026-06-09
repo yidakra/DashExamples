@@ -24,10 +24,17 @@ def load_hour_metadata(paths: List[Path]) -> Dict[str, List[Dict[str, Any]]]:
     """Load all metadata CSVs for a given hour, keyed by sensor name.
 
     Sensor name is derived from the filename pattern: {HH}.{sensor}.csv
+    Files that do not match this pattern (e.g. bare '08.csv') raise ValueError
+    rather than silently using the hour string as the sensor key.
     """
     result: Dict[str, List[Dict[str, Any]]] = {}
     for p in paths:
         parts = p.stem.split(".", 1)
-        sensor = parts[1] if len(parts) == 2 else p.stem
+        if len(parts) != 2 or not parts[1]:
+            raise ValueError(
+                f"Metadata filename {p.name!r} does not match the expected "
+                f"'{{HH}}.{{sensor}}.csv' pattern."
+            )
+        sensor = parts[1]
         result[sensor] = load_metadata_csv(p)
     return result

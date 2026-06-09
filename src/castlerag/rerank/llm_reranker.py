@@ -78,14 +78,37 @@ def compute_rerank_score(output: RerankerOutput) -> float:
 
 
 def parse_reranker_response(raw: str) -> RerankerOutput:
-    """Extract and parse the JSON block from a reranker LLM response."""
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if not match:
-        raise ValueError(f"No JSON block found in reranker response: {raw[:200]!r}")
-    data = json.loads(match.group())
-    out = RerankerOutput.model_validate(data)
-    out.final_rerank_score = compute_rerank_score(out)
-    return out
+    """Extract and parse the JSON block from a reranker LLM response.
+
+    Tries each '{' position left-to-right and returns the first span that
+    produces valid JSON, avoiding greedy-regex over-capture when the model
+    emits extra brace-containing text before or after the target object.
+    """
+    start = 0
+    while True:
+        brace = raw.find("{", start)
+        if brace == -1:
+            break
+        # find the matching closing brace by tracking depth
+        depth = 0
+        for i, ch in enumerate(raw[brace:], brace):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = raw[brace : i + 1]
+                    try:
+                        data = json.loads(candidate)
+                        out = RerankerOutput.model_validate(data)
+                        out.final_rerank_score = compute_rerank_score(out)
+                        return out
+                    except (json.JSONDecodeError, Exception):
+                        pass
+                    break
+        start = brace + 1
+
+    raise ValueError(f"No valid reranker JSON found in response: {raw[:200]!r}")
 
 
 def rerank_candidates(

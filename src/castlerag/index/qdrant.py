@@ -64,8 +64,11 @@ def create_collection(
         try:
             client.delete_collection(collection_name)
             log.info("Deleted existing collection %s", collection_name)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Only swallow "collection not found" — anything else is a real error
+            msg = str(exc).lower()
+            if "not found" not in msg and "doesn't exist" not in msg:
+                raise
 
     client.create_collection(
         collection_name=collection_name,
@@ -123,10 +126,14 @@ def upsert_batch(
     payloads: List[Dict[str, Any]],
 ) -> None:
     """Upsert a batch of points.  point_ids are hex strings (SHA-1)."""
+    if not (len(point_ids) == len(vectors) == len(payloads)):
+        raise ValueError(
+            f"upsert_batch requires equal-length inputs; got "
+            f"point_ids={len(point_ids)}, vectors={len(vectors)}, payloads={len(payloads)}"
+        )
     from qdrant_client.http import models as qm
 
-    # Qdrant expects integer or UUID ids; we use the hex string directly
-    # (qdrant-client ≥1.7 accepts arbitrary strings as ids)
+    # qdrant-client >=1.7 accepts arbitrary strings as point ids
     points = [
         qm.PointStruct(id=pid, vector=vec, payload=pay)
         for pid, vec, pay in zip(point_ids, vectors, payloads)

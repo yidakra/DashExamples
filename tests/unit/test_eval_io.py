@@ -96,6 +96,23 @@ def test_compute_accuracy_empty(tmp_path: Path):
     assert acc == 0.0
 
 
+def test_compute_accuracy_partial_answer_key(tmp_path: Path):
+    """Denominator must be graded questions, not total questions."""
+    q_path = _write_questions(tmp_path, _QUESTIONS_RAW)
+    qs = load_questions(q_path)
+    preds = {"q1": Prediction(question_id="q1", predicted_answer="a")}
+    # Answer key only has q1, not q2 — accuracy should be 1/1 not 1/2
+    ans_path = _write_answers(tmp_path, {"q1": "a"})
+    acc = compute_accuracy(qs, preds, ans_path)
+    assert acc == 1.0
+
+
+def test_load_predictions_rejects_bad_format(tmp_path: Path):
+    p = _write_predictions(tmp_path, {"q1": 42})  # int, not str or dict
+    with pytest.raises(ValueError, match="Unsupported"):
+        load_predictions(p)
+
+
 def test_export_submission(tmp_path: Path):
     preds = {
         "q2": Prediction(question_id="q2", predicted_answer="c"),

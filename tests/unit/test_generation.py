@@ -92,6 +92,37 @@ def test_build_prompt_truncates_evidence():
     assert "[11]" not in prompt
 
 
+def test_parse_reranker_response_with_preamble():
+    """parse_reranker_response must skip extra text before the JSON object."""
+    from castlerag.rerank.llm_reranker import parse_reranker_response
+    raw = (
+        'Sure, here is my assessment:\n'
+        '{"relevance": 3, "support": {"a": 2, "b": 1, "c": 0, "d": 3}, '
+        '"keep": true, "rationale": "Strong match"}\nDone.'
+    )
+    out = parse_reranker_response(raw)
+    assert out.relevance == 3
+    assert out.keep is True
+
+
+def test_parse_reranker_response_with_extra_braces():
+    """Should not over-capture when the model emits extra {} in preamble."""
+    from castlerag.rerank.llm_reranker import parse_reranker_response
+    raw = (
+        'Context: {} not relevant.\n'
+        '{"relevance": 2, "support": {"a": 1, "b": 2, "c": 0, "d": 0}, '
+        '"keep": true, "rationale": "Moderate"}'
+    )
+    out = parse_reranker_response(raw)
+    assert out.relevance == 2
+
+
+def test_parse_reranker_response_no_json_raises():
+    from castlerag.rerank.llm_reranker import parse_reranker_response
+    with pytest.raises(ValueError, match="No valid"):
+        parse_reranker_response("No JSON here at all.")
+
+
 def test_format_candidate_pack_structure():
     hit = _make_hit()
     pack = format_candidate_pack(
