@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from castlerag.routing.question_router import route_question
+from castlerag.routing.question_router import RouteHints, route_question
 
 
 def test_route_question_temporal_extracts_structured_hints():
@@ -69,3 +69,28 @@ def test_route_question_mixed_combines_visual_and_speech_cues():
     assert hints.has_temporal_cue is True
     assert "screen" in hints.extracted_keywords
     assert "said" in hints.extracted_keywords
+
+
+def test_route_hints_default_profile_matches_route_and_is_not_shared():
+    speech_hints = RouteHints(route="speech_text")
+    visual_hints = RouteHints(route="static_visual")
+    assert speech_hints.evidence_profile is not None
+    assert visual_hints.evidence_profile is not None
+    assert speech_hints.evidence_profile.transcript_budget == 30
+    assert visual_hints.evidence_profile.transcript_budget == 10
+    assert speech_hints.evidence_profile is not visual_hints.evidence_profile
+
+
+def test_route_question_does_not_leak_filter_hints_from_answer_options():
+    hints = route_question(
+        question="What did the person say after breakfast?",
+        choices={
+            "a": "Allie said hello in the kitchen",
+            "b": "Bjorn waved from the office",
+            "c": "Celine entered the hallway",
+            "d": "Deon looked at the screen",
+        },
+    )
+    assert hints.day is None
+    assert hints.participant is None
+    assert hints.room is None

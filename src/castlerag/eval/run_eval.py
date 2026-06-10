@@ -36,6 +36,14 @@ from castlerag.retrieval.search import retrieve as retrieve_evidence
 from castlerag.routing.question_router import RouteHints, route_question
 from castlerag.schemas import EvalQuestion, Prediction, RerankResult, RetrievalHit
 
+try:  # pragma: no cover - optional dependency typing only
+    from qdrant_client.http.exceptions import (
+        ResponseHandlingException,
+        UnexpectedResponse,
+    )
+except ImportError:  # pragma: no cover - qdrant-client may be absent in some envs
+    ResponseHandlingException = UnexpectedResponse = ()  # type: ignore[assignment]
+
 
 class PipelineDependencyError(RuntimeError):
     """Raised when the eval runner reaches a missing pipeline dependency."""
@@ -257,7 +265,13 @@ def _build_default_pipeline(cfg: CastleRAGConfig) -> EvalPipeline:
                 embed_client=embed_client,
                 retrieval_cfg=cfg.retrieval,
             )
-        except Exception as exc:  # pragma: no cover - guarded in run_eval tests
+        except (
+            ConnectionError,
+            TimeoutError,
+            OSError,
+            ResponseHandlingException,
+            UnexpectedResponse,
+        ) as exc:  # pragma: no cover - guarded in run_eval tests
             raise PipelineDependencyError(
                 _dependency_failure_message(
                     "retrieval",
@@ -408,7 +422,16 @@ def _prepare_default_runtime(
             )
         )
 
-    bm25_index = load_bm25_index(bm25_path)
+    try:
+        bm25_index = load_bm25_index(bm25_path)
+    except Exception as exc:
+        raise PipelineDependencyError(
+            _dependency_failure_message(
+                "indexing",
+                f"failed to load BM25 transcript index at {bm25_path}: {exc}",
+                artifact_report,
+            )
+        ) from exc
     windows = getattr(bm25_index, "windows", None)
     if not windows:
         raise PipelineDependencyError(

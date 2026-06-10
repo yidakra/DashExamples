@@ -147,7 +147,7 @@ _VISUAL_PHRASES = (
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class RouteEvidenceProfile:
     """Route-scoped retrieval budget and modality-priority profile."""
 
@@ -236,9 +236,11 @@ class RouteHints:
     has_speech_cue: bool = False
     has_temporal_cue: bool = False
     extracted_keywords: List[str] = field(default_factory=list)
-    evidence_profile: RouteEvidenceProfile = field(
-        default_factory=lambda: _ROUTE_PROFILES["mixed"]
-    )
+    evidence_profile: Optional[RouteEvidenceProfile] = None
+
+    def __post_init__(self) -> None:
+        if self.evidence_profile is None:
+            self.evidence_profile = _profile_for_route(self.route)
 
 
 def route_question(
@@ -247,14 +249,19 @@ def route_question(
 ) -> RouteHints:
     """Assign one route and extract reusable retrieval hints."""
     question_lower = question.lower()
-    choices_lower = " ".join(choices.values()).lower()
-    text = f"{question_lower} {choices_lower}"
-    tokens = set(re.findall(r"\b\w+\b", text))
+    tokens = set(re.findall(r"\b\w+\b", question_lower))
 
-    day = _extract_day(text)
-    participant = next((name for name in _PARTICIPANTS if name.lower() in text), None)
+    day = _extract_day(question_lower)
+    participant = next(
+        (name for name in _PARTICIPANTS if name.lower() in question_lower),
+        None,
+    )
     room = next(
-        (normalized for phrase, normalized in _ROOM_PATTERNS.items() if phrase in text),
+        (
+            normalized
+            for phrase, normalized in _ROOM_PATTERNS.items()
+            if phrase in question_lower
+        ),
         None,
     )
 
@@ -265,13 +272,13 @@ def route_question(
         phrases=_TEMPORAL_PHRASES,
     )
     speech_score, speech_hits = _cue_score(
-        text,
+        question_lower,
         tokens,
         keywords=_SPEECH_KEYWORDS,
         phrases=_SPEECH_PHRASES,
     )
     visual_score, visual_hits = _cue_score(
-        text,
+        question_lower,
         tokens,
         keywords=_VISUAL_KEYWORDS,
         phrases=_VISUAL_PHRASES,
@@ -306,7 +313,18 @@ def route_question(
         has_speech_cue=has_speech_cue,
         has_temporal_cue=has_temporal_cue,
         extracted_keywords=extracted_keywords,
-        evidence_profile=_ROUTE_PROFILES[route],
+        evidence_profile=_profile_for_route(route),
+    )
+
+
+def _profile_for_route(route: QuestionRoute) -> RouteEvidenceProfile:
+    profile = _ROUTE_PROFILES[route]
+    return RouteEvidenceProfile(
+        transcript_budget=profile.transcript_budget,
+        candidate_video_budget=profile.candidate_video_budget,
+        auxiliary_image_budget=profile.auxiliary_image_budget,
+        max_evidence_rows=profile.max_evidence_rows,
+        source_priority=tuple(profile.source_priority),
     )
 
 

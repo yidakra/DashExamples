@@ -503,3 +503,69 @@ def test_run_eval_default_pipeline_reports_missing_vllm_base_url(
 
     with pytest.raises(PipelineDependencyError, match="VLLM_BASE_URL is not set"):
         run_eval(qs, out_dir=tmp_path / "outputs")
+
+
+def test_run_eval_default_pipeline_wraps_corrupt_bm25_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    q_path = _write_questions(tmp_path, {"q1": _QUESTIONS_RAW["q1"]})
+    qs = load_questions(q_path)
+    cfg = CastleRAGConfig()
+    emb_dir = tmp_path / "embeddings"
+    emb_dir.mkdir()
+    (emb_dir / "transcripts.pkl").write_bytes(b"placeholder")
+    cfg.embedding.cache_dir = str(emb_dir)
+    cfg.preprocessing.chunks_dir = str(tmp_path / "chunks")
+    monkeypatch.setattr(run_eval_module, "load_config", lambda **_: cfg)
+    monkeypatch.setattr(
+        run_eval_module,
+        "load_bm25_index",
+        lambda path: (_ for _ in ()).throw(ValueError("corrupt bundle")),
+    )
+
+    with pytest.raises(
+        PipelineDependencyError,
+        match="failed to load BM25 transcript index",
+    ):
+        run_eval(qs, out_dir=tmp_path / "outputs")
+
+
+def test_run_eval_unexpected_retrieval_error_is_not_reclassified(
+    tmp_path: Path,
+):
+    q_path = _write_questions(tmp_path, {"q1": _QUESTIONS_RAW["q1"]})
+    qs = load_questions(q_path)
+
+    def _route(question: str, choices: dict[str, str]) -> RouteHints:
+        return RouteHints(route="speech_text")
+
+    def _retrieve(question: EvalQuestion, hints: RouteHints) -> list[RetrievalHit]:
+        raise ValueError("logic bug")
+
+    def _rerank(
+        question: EvalQuestion,
+        hints: RouteHints,
+        candidate_packs: list[dict],
+    ) -> list[dict]:
+        raise AssertionError("should not reach reranking")
+
+    def _generate(
+        question: EvalQuestion,
+        hints: RouteHints,
+        evidence_rows: list[RetrievalHit],
+        support_priors: dict[str, float],
+    ) -> Prediction:
+        raise AssertionError("should not reach generation")
+
+    pipeline = EvalPipeline(
+        route=_route,
+        retrieve=_retrieve,
+        rerank=_rerank,
+        generate=_generate,
+    )
+    with pytest.raises(
+        PipelineDependencyError,
+        match="retrieval failed for question q1",
+    ):
+        run_eval(qs, out_dir=tmp_path / "outputs", pipeline=pipeline)
