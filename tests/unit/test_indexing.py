@@ -5,7 +5,23 @@ from pathlib import Path
 
 import numpy as np
 
+from castlerag.config import CastleRAGConfig
 from castlerag.embed.omniembed import OmniEmbedClient, format_query_text, make_point_id
+from castlerag.index.io import (
+    load_aux_records,
+    load_clip_records,
+    load_embedding_cache,
+    load_event_summary_records,
+    load_transcript_windows,
+    write_embedding_cache,
+    write_jsonl_records,
+)
+from castlerag.index.pipeline import (
+    build_qdrant_index,
+    cache_dense_embeddings,
+    discover_chunk_artifacts,
+    load_chunk_records,
+)
 from castlerag.index.qdrant import build_point_batches, record_to_qdrant_point
 from castlerag.index.transcript_lexical import build_bm25_index, load_bm25_index
 from castlerag.schemas import AuxRecord, ClipRecord, EventSummaryRecord, TranscriptSegment, TranscriptWindow
@@ -64,6 +80,26 @@ def _event_record() -> EventSummaryRecord:
         member_clip_ids=["clip_0001", "clip_0002", "clip_0003", "clip_0004"],
         event_summary="Allie walks into the kitchen and opens the fridge.",
         aggregated_ocr_text="EXIT",
+    )
+
+
+def _config(tmp_path: Path) -> CastleRAGConfig:
+    return CastleRAGConfig.model_validate(
+        {
+            "preprocessing": {"chunks_dir": str(tmp_path / "chunks")},
+            "embedding": {
+                "cache_dir": str(tmp_path / "embeddings"),
+                "backend": "transformers",
+                "batch_sizes": {
+                    "transcript": 2,
+                    "event_summary": 2,
+                    "image": 2,
+                    "video": 2,
+                },
+            },
+            "qdrant": {"collection": "castle_test"},
+            "version": "0.1.0",
+        }
     )
 
 
@@ -145,6 +181,223 @@ def test_build_point_batches_mixed_records():
     )
     assert len(points) == 3
     assert all(point.model_name == "Tevatron/OmniEmbed-v0.1-multivent" for point in points)
+
+
+def test_write_and_load_transcript_windows(tmp_path: Path):
+    path = tmp_path / "transcripts.jsonl"
+    write_jsonl_records([_transcript_window()], path)
+    loaded = load_transcript_windows(path)
+    assert len(loaded) == 1
+    assert loaded[0].transcript_window_id == "tx_0001"
+
+
+def test_write_and_load_clip_records(tmp_path: Path):
+    path = tmp_path / "clips.jsonl"
+    write_jsonl_records([_clip_record()], path)
+    loaded = load_clip_records(path)
+    assert len(loaded) == 1
+    assert loaded[0].clip_id == "clip_0001"
+
+
+def test_write_and_load_event_summary_records(tmp_path: Path):
+    path = tmp_path / "events.jsonl"
+    write_jsonl_records([_event_record()], path)
+    loaded = load_event_summary_records(path)
+    assert len(loaded) == 1
+    assert loaded[0].event_summary_id == "evt_0001"
+
+
+def test_write_and_load_aux_records(tmp_path: Path):
+    aux = AuxRecord(
+        clip_id="aux_hr_0001",
+        source_type="aux_heartrate",
+        modality="text",
+        day="day1",
+        participant_id="Allie",
+        absolute_start=1_672_531_200_000,
+        absolute_end=1_672_531_260_000,
+        summary_text="Heartrate rising to 92 bpm",
+    )
+    path = tmp_path / "aux.jsonl"
+    write_jsonl_records([aux], path)
+    loaded = load_aux_records(path)
+    assert len(loaded) == 1
+    assert loaded[0].clip_id == "aux_hr_0001"
+
+
+def test_embedding_cache_roundtrip(tmp_path: Path):
+    cache_path = tmp_path / "embeddings.npz"
+    record_ids = ["r1", "r2"]
+    vectors = np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+    write_embedding_cache(record_ids, vectors, cache_path)
+    loaded_ids, loaded_vectors = load_embedding_cache(cache_path)
+    assert loaded_ids == record_ids
+    assert np.array_equal(loaded_vectors, vectors)
+
+
+def test_embedding_cache_rejects_non_2d(tmp_path: Path):
+    cache_path = tmp_path / "bad.npz"
+    vectors = np.asarray([1.0, 2.0], dtype=np.float32)
+    try:
+        write_embedding_cache(["r1", "r2"], vectors, cache_path)
+    except ValueError as exc:
+        assert "2D" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for non-2D vectors")
+
+
+def test_discover_and_load_chunk_records(tmp_path: Path):
+    chunk_root = tmp_path / "chunks" / "day1" / "Allie"
+    write_jsonl_records([_transcript_window()], chunk_root / "transcripts.jsonl")
+    write_jsonl_records([_clip_record()], chunk_root / "clips.jsonl")
+    write_jsonl_records([_event_record()], chunk_root / "events.jsonl")
+    aux = AuxRecord(
+        clip_id="aux_photo_0001",
+        source_type="aux_photo",
+        modality="image",
+        day="day1",
+        participant_id="Allie",
+        absolute_start=1_672_531_200_000,
+        absolute_end=1_672_531_200_001,
+        asset_path="/tmp/photo.jpg",
+    )
+    write_jsonl_records([aux], chunk_root / "aux.jsonl")
+
+    artifacts = discover_chunk_artifacts(tmp_path / "chunks")
+    assert len(artifacts.transcripts) == 1
+    assert len(artifacts.clips) == 1
+    assert len(artifacts.events) == 1
+    assert len(artifacts.aux) == 1
+
+    loaded = load_chunk_records(tmp_path / "chunks")
+    assert len(loaded.transcripts) == 1
+    assert len(loaded.clips) == 1
+    assert len(loaded.events) == 1
+    assert len(loaded.aux) == 1
+
+
+def test_cache_dense_embeddings_writes_expected_npz_files(tmp_path: Path):
+    class FakeEmbedClient:
+        def __init__(self) -> None:
+            self.dim = 3
+
+        def embed_texts(self, payloads: list[str]) -> np.ndarray:
+            return np.asarray([[float(len(text)), 1.0, 0.0] for text in payloads], dtype=np.float32)
+
+        def embed_images(self, payloads: list[str]) -> np.ndarray:
+            return np.asarray([[float(idx), 2.0, 0.0] for idx, _ in enumerate(payloads)], dtype=np.float32)
+
+        def embed_videos(self, payloads: list[list[str]]) -> np.ndarray:
+            return np.asarray([[float(len(frames)), 3.0, 0.0] for frames in payloads], dtype=np.float32)
+
+    cfg = _config(tmp_path)
+    records = load_chunk_records(tmp_path / "missing")
+    records.transcripts = [_transcript_window()]
+    records.clips = [_clip_record()]
+    records.events = [_event_record()]
+    records.aux = [
+        AuxRecord(
+            clip_id="aux_text_0001",
+            source_type="aux_heartrate",
+            modality="text",
+            day="day1",
+            participant_id="Allie",
+            absolute_start=1_672_531_200_000,
+            absolute_end=1_672_531_260_000,
+            summary_text="92 bpm",
+        ),
+        AuxRecord(
+            clip_id="aux_image_0001",
+            source_type="aux_photo",
+            modality="image",
+            day="day1",
+            participant_id="Allie",
+            absolute_start=1_672_531_200_000,
+            absolute_end=1_672_531_200_001,
+            asset_path="/tmp/photo.jpg",
+        ),
+        AuxRecord(
+            clip_id="aux_video_0001",
+            source_type="aux_video",
+            modality="video",
+            day="day1",
+            participant_id="Allie",
+            absolute_start=1_672_531_200_000,
+            absolute_end=1_672_531_230_000,
+            asset_path="/tmp/video.mp4",
+            raw_features={"sampled_frame_paths": ["/tmp/f1.jpg", "/tmp/f2.jpg"]},
+        ),
+    ]
+
+    paths = cache_dense_embeddings(records, cfg, FakeEmbedClient())
+    names = {path.name for path in paths}
+    assert {
+        "transcripts.npz",
+        "events.npz",
+        "clips.npz",
+        "aux_text.npz",
+        "aux_image.npz",
+        "aux_video.npz",
+    }.issubset(names)
+    assert (Path(cfg.embedding.cache_dir) / "manifest.json").exists()
+
+
+def test_build_qdrant_index_upserts_all_cached_artifacts(tmp_path: Path, monkeypatch):
+    class FakeEmbedClient:
+        def __init__(self) -> None:
+            self.dim = 2
+
+        def embed_texts(self, payloads: list[str]) -> np.ndarray:
+            return np.asarray([[1.0, float(idx)] for idx, _ in enumerate(payloads)], dtype=np.float32)
+
+        def embed_images(self, payloads: list[str]) -> np.ndarray:
+            return np.asarray([[2.0, float(idx)] for idx, _ in enumerate(payloads)], dtype=np.float32)
+
+        def embed_videos(self, payloads: list[list[str]]) -> np.ndarray:
+            return np.asarray([[3.0, float(len(frames))] for frames in payloads], dtype=np.float32)
+
+    cfg = _config(tmp_path)
+    records = load_chunk_records(tmp_path / "missing")
+    records.transcripts = [_transcript_window()]
+    records.clips = [_clip_record()]
+    records.events = [_event_record()]
+    records.aux = [
+        AuxRecord(
+            clip_id="aux_text_0001",
+            source_type="aux_heartrate",
+            modality="text",
+            day="day1",
+            participant_id="Allie",
+            absolute_start=1_672_531_200_000,
+            absolute_end=1_672_531_260_000,
+            summary_text="92 bpm",
+        )
+    ]
+    cache_dense_embeddings(records, cfg, FakeEmbedClient())
+
+    class FakeQdrantClient:
+        pass
+
+    captured: dict[str, object] = {}
+
+    def _bootstrap(**kwargs):
+        captured["vector_size"] = kwargs["vector_size"]
+        return FakeQdrantClient()
+
+    def _upsert_batch(**kwargs):
+        payloads = captured.setdefault("payloads", [])
+        assert isinstance(payloads, list)
+        payloads.append(kwargs)
+
+    monkeypatch.setattr("castlerag.index.pipeline.bootstrap_collection", _bootstrap)
+    monkeypatch.setattr("castlerag.index.pipeline.upsert_batch", _upsert_batch)
+
+    vector_size, cache_paths = build_qdrant_index(cfg, records, recreate=True)
+    assert vector_size == 2
+    assert len(cache_paths) == 4
+    payload_batches = captured["payloads"]
+    assert isinstance(payload_batches, list)
+    assert len(payload_batches) == 4
 
 
 def test_format_query_text():
