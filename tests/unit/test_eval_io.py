@@ -1,10 +1,13 @@
 """Tests for src/castlerag/eval/io.py"""
 
+import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from castlerag.config import CastleRAGConfig
 from castlerag.eval.io import (
     compute_accuracy,
     export_submission,
@@ -28,6 +31,8 @@ from castlerag.schemas import (
     RerankResult,
     RetrievalHit,
 )
+
+run_eval_module = importlib.import_module("castlerag.eval.run_eval")
 
 
 def _write_questions(tmp_path: Path, data: dict) -> Path:
@@ -368,3 +373,133 @@ def test_run_eval_wraps_missing_reranker_as_dependency_error(tmp_path: Path):
     )
     with pytest.raises(PipelineDependencyError, match="reranking.*q1"):
         run_eval(qs, out_dir=tmp_path / "outputs", pipeline=pipeline)
+
+
+def test_run_eval_wraps_retrieve_dependency_error_with_question_id(tmp_path: Path):
+    q_path = _write_questions(tmp_path, {"q1": _QUESTIONS_RAW["q1"]})
+    qs = load_questions(q_path)
+
+    def _route(question: str, choices: dict[str, str]) -> RouteHints:
+        return RouteHints(route="speech_text")
+
+    def _retrieve(question: EvalQuestion, hints: RouteHints) -> list[RetrievalHit]:
+        raise PipelineDependencyError("Qdrant collection is empty")
+
+    def _rerank(
+        question: EvalQuestion,
+        hints: RouteHints,
+        candidate_packs: list[dict],
+    ) -> list[dict]:
+        raise AssertionError("should not reach reranking")
+
+    def _generate(
+        question: EvalQuestion,
+        hints: RouteHints,
+        evidence_rows: list[RetrievalHit],
+        support_priors: dict[str, float],
+    ) -> Prediction:
+        raise AssertionError("should not reach generation")
+
+    pipeline = EvalPipeline(
+        route=_route,
+        retrieve=_retrieve,
+        rerank=_rerank,
+        generate=_generate,
+    )
+    with pytest.raises(
+        PipelineDependencyError,
+        match="retrieval dependency failed for question q1: Qdrant collection is empty",
+    ):
+        run_eval(qs, out_dir=tmp_path / "outputs", pipeline=pipeline)
+
+
+def test_run_eval_default_pipeline_reports_missing_local_index_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    q_path = _write_questions(tmp_path, {"q1": _QUESTIONS_RAW["q1"]})
+    qs = load_questions(q_path)
+    cfg = CastleRAGConfig()
+    cfg.embedding.cache_dir = str(tmp_path / "embeddings")
+    cfg.preprocessing.chunks_dir = str(tmp_path / "chunks")
+
+    monkeypatch.setattr(run_eval_module, "load_config", lambda **_: cfg)
+
+    with pytest.raises(
+        PipelineDependencyError,
+        match="BM25 transcript index not found",
+    ):
+        run_eval(qs, out_dir=tmp_path / "outputs")
+
+
+def test_run_eval_default_pipeline_reports_empty_qdrant_collection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    q_path = _write_questions(tmp_path, {"q1": _QUESTIONS_RAW["q1"]})
+    qs = load_questions(q_path)
+    cfg = CastleRAGConfig()
+    emb_dir = tmp_path / "embeddings"
+    emb_dir.mkdir()
+    (emb_dir / "transcripts.pkl").write_bytes(b"placeholder")
+    cfg.embedding.cache_dir = str(emb_dir)
+    cfg.preprocessing.chunks_dir = str(tmp_path / "chunks")
+    monkeypatch.setattr(run_eval_module, "load_config", lambda **_: cfg)
+    monkeypatch.setattr(
+        run_eval_module,
+        "load_bm25_index",
+        lambda path: SimpleNamespace(windows=[object()]),
+    )
+
+    class _EmptyClient:
+        def collection_exists(self, name: str) -> bool:
+            return True
+
+        def count(self, collection_name: str, exact: bool = False) -> int:
+            return 0
+
+    monkeypatch.setattr(
+        run_eval_module,
+        "get_client",
+        lambda host, port: _EmptyClient(),
+    )
+
+    with pytest.raises(PipelineDependencyError, match="Qdrant collection .* is empty"):
+        run_eval(qs, out_dir=tmp_path / "outputs")
+
+
+def test_run_eval_default_pipeline_reports_missing_vllm_base_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    q_path = _write_questions(tmp_path, {"q1": _QUESTIONS_RAW["q1"]})
+    qs = load_questions(q_path)
+    cfg = CastleRAGConfig()
+    emb_dir = tmp_path / "embeddings"
+    emb_dir.mkdir()
+    (emb_dir / "transcripts.pkl").write_bytes(b"placeholder")
+    cfg.embedding.cache_dir = str(emb_dir)
+    cfg.preprocessing.chunks_dir = str(tmp_path / "chunks")
+    monkeypatch.setattr(run_eval_module, "load_config", lambda **_: cfg)
+    monkeypatch.setattr(
+        run_eval_module,
+        "load_bm25_index",
+        lambda path: SimpleNamespace(windows=[object()]),
+    )
+
+    class _ReadyClient:
+        def collection_exists(self, name: str) -> bool:
+            return True
+
+        def count(self, collection_name: str, exact: bool = False) -> int:
+            return 12
+
+    monkeypatch.setattr(
+        run_eval_module,
+        "get_client",
+        lambda host, port: _ReadyClient(),
+    )
+    monkeypatch.delenv("VLLM_BASE_URL", raising=False)
+
+    with pytest.raises(PipelineDependencyError, match="VLLM_BASE_URL is not set"):
+        run_eval(qs, out_dir=tmp_path / "outputs")

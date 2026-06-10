@@ -12,13 +12,6 @@ from castlerag.retrieval.transcript_lexical import score_windows
 from castlerag.routing.question_router import RouteHints
 from castlerag.schemas import EvalQuestion, RetrievalHit
 
-_TRANSCRIPT_ROUTE_BUDGETS = {
-    "static_visual": 10,
-    "speech_text": 30,
-    "temporal": 30,
-    "mixed": 30,
-}
-
 
 def reciprocal_rank_fusion(
     ranked_lists: List[List[RetrievalHit]],
@@ -97,7 +90,7 @@ def retrieve(
     transcript_lane = reciprocal_rank_fusion(
         [transcript_bm25, *transcript_dense_lists],
         k=retrieval_cfg.rrf_k,
-    )[: _transcript_budget(hints.route, retrieval_cfg.transcript_top_k)]
+    )[: min(retrieval_cfg.transcript_top_k, hints.evidence_profile.transcript_budget)]
 
     multimodal_lists: List[List[RetrievalHit]] = []
     multimodal_specs = [
@@ -212,19 +205,29 @@ def _collapse_hits(
     hints: RouteHints,
     retrieval_cfg: Any,
 ) -> List[RetrievalHit]:
-    transcript_budget = _transcript_budget(hints.route, retrieval_cfg.transcript_top_k)
-    max_candidate_videos = retrieval_cfg.max_candidate_videos
-    max_aux_images = retrieval_cfg.max_aux_images
-    max_rows = retrieval_cfg.max_evidence_rows
+    transcript_budget = min(
+        retrieval_cfg.transcript_top_k,
+        hints.evidence_profile.transcript_budget,
+    )
+    max_candidate_videos = min(
+        retrieval_cfg.max_candidate_videos,
+        hints.evidence_profile.candidate_video_budget,
+    )
+    max_aux_images = min(
+        retrieval_cfg.max_aux_images,
+        hints.evidence_profile.auxiliary_image_budget,
+    )
+    max_rows = min(
+        retrieval_cfg.max_evidence_rows,
+        hints.evidence_profile.max_evidence_rows,
+    )
 
     transcript_count = 0
     candidate_count = 0
     aux_image_count = 0
     kept: List[RetrievalHit] = []
 
-    ordered_hits = sorted(
-        hits, key=lambda hit: (_route_priority(hints.route, hit), hit.rank)
-    )
+    ordered_hits = sorted(hits, key=lambda hit: (_route_priority(hints, hit), hit.rank))
 
     for hit in ordered_hits:
         if len(kept) >= max_rows:
@@ -247,25 +250,8 @@ def _collapse_hits(
     return [
         hit.model_copy(update={"rank": rank}) for rank, hit in enumerate(kept, start=1)
     ]
-
-
-def _transcript_budget(route: str, default_budget: int) -> int:
-    return min(default_budget, _TRANSCRIPT_ROUTE_BUDGETS.get(route, default_budget))
-
-
-def _route_priority(route: str, hit: RetrievalHit) -> int:
-    if route == "speech_text":
-        return 0 if hit.source_type == "transcript_window" else 1
-    if route == "static_visual":
-        if hit.source_type in {"main_clip", "main_event_summary"} or (
-            hit.modality == "image" and hit.source_type.startswith("aux_")
-        ):
-            return 0
-        return 1
-    if route == "temporal":
-        if hit.source_type in {"transcript_window", "main_event_summary"}:
-            return 0
-        if hit.source_type == "main_clip":
-            return 1
-        return 2
-    return 0
+def _route_priority(hints: RouteHints, hit: RetrievalHit) -> int:
+    try:
+        return hints.evidence_profile.source_priority.index(hit.source_type)
+    except ValueError:
+        return len(hints.evidence_profile.source_priority)

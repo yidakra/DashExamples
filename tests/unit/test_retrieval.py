@@ -8,7 +8,7 @@ import numpy as np
 
 from castlerag.retrieval.search import reciprocal_rank_fusion, retrieve
 from castlerag.retrieval.transcript_lexical import score_windows
-from castlerag.routing.question_router import route_question
+from castlerag.routing.question_router import RouteEvidenceProfile, route_question
 from castlerag.schemas import (
     EvalQuestion,
     RetrievalHit,
@@ -233,3 +233,109 @@ def test_retrieve_fuses_transcript_and_multimodal_hits():
     assert hits[0].record_id == "tw_1"
     assert any(hit.source_type == "main_clip" for hit in hits)
     assert len(hits) <= 50
+
+
+def test_retrieve_consumes_router_budget_profile_without_reparsing():
+    class FakeBM25:
+        def get_scores(self, tokens: list[str]) -> np.ndarray:
+            return np.asarray([5.0, 4.0], dtype=np.float32)
+
+    class FakeEmbedClient:
+        def embed_texts(self, texts: list[str]) -> np.ndarray:
+            return np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+
+    class FakePoint:
+        def __init__(self, pid: str, score: float, payload: dict) -> None:
+            self.id = pid
+            self.score = score
+            self.payload = payload
+
+    class FakeQdrantClient:
+        def query_points(self, **kwargs):
+            source_type = next(
+                condition.match.value
+                for condition in kwargs["query_filter"].must
+                if condition.key == "source_type"
+            )
+            if source_type == "transcript_window":
+                return SimpleNamespace(
+                    points=[
+                        FakePoint(
+                            "pt_tx_3",
+                            0.95,
+                            {
+                                "record_id": "tw_2",
+                                "source_type": "transcript_window",
+                                "modality": "text",
+                                "day": "day1",
+                                "camera_id": "Allie",
+                                "participant_id": "Allie",
+                                "absolute_start": 1_672_531_300_000,
+                                "absolute_end": 1_672_531_315_000,
+                                "transcript_text": (
+                                    "Allie quietly walked into the office."
+                                ),
+                            },
+                        )
+                    ]
+                )
+            if source_type == "main_clip":
+                return SimpleNamespace(
+                    points=[
+                        FakePoint(
+                            "pt_clip_2",
+                            0.7,
+                            {
+                                "record_id": "clip_2",
+                                "source_type": "main_clip",
+                                "modality": "video",
+                                "day": "day1",
+                                "camera_id": "Allie",
+                                "participant_id": "Allie",
+                                "absolute_start": 1_672_531_320_000,
+                                "absolute_end": 1_672_531_350_000,
+                                "asset_path": "/tmp/clip_2.mp4",
+                            },
+                        )
+                    ]
+                )
+            return SimpleNamespace(points=[])
+
+    bm25_bundle = SimpleNamespace(bm25=FakeBM25(), windows=_windows())
+    retrieval_cfg = SimpleNamespace(
+        transcript_top_k=30,
+        event_summary_top_k=20,
+        video_top_k=20,
+        photo_top_k=16,
+        aux_video_top_k=8,
+        heartrate_top_k=8,
+        gaze_top_k=8,
+        thermal_top_k=8,
+        rrf_k=60,
+        max_candidate_videos=4,
+        frames_per_candidate=32,
+        max_aux_images=16,
+        max_evidence_rows=50,
+    )
+    hints = route_question(
+        "What color shirt was Allie wearing in the kitchen?",
+        {"a": "Blue", "b": "Black", "c": "White", "d": "Red"},
+    )
+    hints.evidence_profile = RouteEvidenceProfile(
+        transcript_budget=1,
+        candidate_video_budget=4,
+        auxiliary_image_budget=16,
+        max_evidence_rows=50,
+        source_priority=("main_clip", "transcript_window"),
+    )
+    hits = retrieve(
+        question=_question(),
+        hints=hints,
+        qdrant_client=FakeQdrantClient(),
+        collection_name="castle_test",
+        bm25_index=bm25_bundle,
+        embed_client=FakeEmbedClient(),
+        retrieval_cfg=retrieval_cfg,
+    )
+    assert sum(1 for hit in hits if hit.source_type == "transcript_window") == 1
+    assert hits[0].source_type == "main_clip"
