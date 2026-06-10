@@ -36,6 +36,14 @@ from castlerag.retrieval.search import retrieve as retrieve_evidence
 from castlerag.routing.question_router import RouteHints, route_question
 from castlerag.schemas import EvalQuestion, Prediction, RerankResult, RetrievalHit
 
+try:  # pragma: no cover - optional dependency typing only
+    from qdrant_client.http.exceptions import (
+        ResponseHandlingException,
+        UnexpectedResponse,
+    )
+except ImportError:  # pragma: no cover - qdrant-client may be absent in some envs
+    ResponseHandlingException = UnexpectedResponse = ()  # type: ignore[assignment]
+
 
 class PipelineDependencyError(RuntimeError):
     """Raised when the eval runner reaches a missing pipeline dependency."""
@@ -55,6 +63,15 @@ class EvalRunResult:
     traces: List[dict]
     output_paths: EvalOutputPaths
     accuracy: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class IndexArtifactReport:
+    bm25_path: Path
+    chunks_dir: Path
+    cache_dir: Path
+    chunk_files: Dict[str, List[Path]]
+    embedding_caches: Dict[str, List[Path]]
 
 
 @dataclass(frozen=True)
@@ -108,8 +125,16 @@ def run_eval(
         hints = active_pipeline.route(question.query, question.answers)
         try:
             retrieved = active_pipeline.retrieve(question, hints)
+        except PipelineDependencyError as exc:
+            raise _stage_dependency_error(
+                "retrieval",
+                question.question_id,
+                exc,
+            ) from exc
         except NotImplementedError as exc:
             raise _stage_error("retrieval", question.question_id, exc) from exc
+        except Exception as exc:
+            raise _stage_failure_error("retrieval", question.question_id, exc) from exc
 
         candidate_packs = expand_candidates(
             retrieved,
@@ -119,8 +144,16 @@ def run_eval(
         )
         try:
             reranked = active_pipeline.rerank(question, hints, candidate_packs)
+        except PipelineDependencyError as exc:
+            raise _stage_dependency_error(
+                "reranking",
+                question.question_id,
+                exc,
+            ) from exc
         except NotImplementedError as exc:
             raise _stage_error("reranking", question.question_id, exc) from exc
+        except Exception as exc:
+            raise _stage_failure_error("reranking", question.question_id, exc) from exc
 
         rerank_result = _coerce_rerank_result(reranked, hints.route)
         evidence_rows = _flatten_reranked_evidence(
@@ -136,8 +169,16 @@ def run_eval(
                 evidence_rows,
                 support_priors,
             )
+        except PipelineDependencyError as exc:
+            raise _stage_dependency_error(
+                "generation",
+                question.question_id,
+                exc,
+            ) from exc
         except NotImplementedError as exc:
             raise _stage_error("generation", question.question_id, exc) from exc
+        except Exception as exc:
+            raise _stage_failure_error("generation", question.question_id, exc) from exc
 
         predictions[question.question_id] = prediction
         traces.append(
@@ -203,14 +244,7 @@ def _resolve_output_paths(
 
 
 def _build_default_pipeline(cfg: CastleRAGConfig) -> EvalPipeline:
-    bm25_path = Path(cfg.embedding.cache_dir) / "transcripts.pkl"
-    if not bm25_path.exists():
-        raise PipelineDependencyError(
-            "BM25 transcript index not found. Run `castlerag index` first."
-        )
-
-    bm25_index = load_bm25_index(bm25_path)
-    qdrant_client = get_client(cfg.qdrant.host, cfg.qdrant.port)
+    bm25_index, qdrant_client, artifact_report = _prepare_default_runtime(cfg)
     embed_client = OmniEmbedClient(
         model=cfg.embedding.model,
         backend=cfg.embedding.backend,
@@ -221,15 +255,30 @@ def _build_default_pipeline(cfg: CastleRAGConfig) -> EvalPipeline:
     generation_client = _build_vllm_chat_client()
 
     def _retrieve(question: EvalQuestion, hints: RouteHints) -> List[RetrievalHit]:
-        return retrieve_evidence(
-            question=question,
-            hints=hints,
-            qdrant_client=qdrant_client,
-            collection_name=cfg.qdrant.collection,
-            bm25_index=bm25_index,
-            embed_client=embed_client,
-            retrieval_cfg=cfg.retrieval,
-        )
+        try:
+            return retrieve_evidence(
+                question=question,
+                hints=hints,
+                qdrant_client=qdrant_client,
+                collection_name=cfg.qdrant.collection,
+                bm25_index=bm25_index,
+                embed_client=embed_client,
+                retrieval_cfg=cfg.retrieval,
+            )
+        except (
+            ConnectionError,
+            TimeoutError,
+            OSError,
+            ResponseHandlingException,
+            UnexpectedResponse,
+        ) as exc:  # pragma: no cover - guarded in run_eval tests
+            raise PipelineDependencyError(
+                _dependency_failure_message(
+                    "retrieval",
+                    f"dense retrieval/BM25 query failed: {exc}",
+                    artifact_report,
+                )
+            ) from exc
 
     def _rerank(
         question: EvalQuestion,
@@ -268,6 +317,7 @@ def _build_default_pipeline(cfg: CastleRAGConfig) -> EvalPipeline:
         rerank=_rerank,
         generate=_generate,
     )
+
 
 def _flatten_reranked_evidence(
     reranked: RerankResult,
@@ -334,8 +384,218 @@ def _stage_error(
     )
 
 
+def _stage_dependency_error(
+    stage: str,
+    question_id: str,
+    exc: PipelineDependencyError,
+) -> PipelineDependencyError:
+    return PipelineDependencyError(
+        f"{stage} dependency failed for question {question_id}: {exc}"
+    )
+
+
+def _stage_failure_error(
+    stage: str,
+    question_id: str,
+    exc: Exception,
+) -> PipelineDependencyError:
+    return PipelineDependencyError(
+        f"{stage} failed for question {question_id}: {exc}"
+    )
+
+
 def _vllm_base_url() -> Optional[str]:
     return os.getenv("VLLM_BASE_URL")
+
+
+def _prepare_default_runtime(
+    cfg: CastleRAGConfig,
+) -> tuple[Any, Any, IndexArtifactReport]:
+    artifact_report = _discover_index_artifacts(cfg)
+    bm25_path = artifact_report.bm25_path
+    if not bm25_path.exists():
+        raise PipelineDependencyError(
+            _dependency_failure_message(
+                "indexing",
+                f"BM25 transcript index not found at {bm25_path}",
+                artifact_report,
+            )
+        )
+
+    try:
+        bm25_index = load_bm25_index(bm25_path)
+    except Exception as exc:
+        raise PipelineDependencyError(
+            _dependency_failure_message(
+                "indexing",
+                f"failed to load BM25 transcript index at {bm25_path}: {exc}",
+                artifact_report,
+            )
+        ) from exc
+    windows = getattr(bm25_index, "windows", None)
+    if not windows:
+        raise PipelineDependencyError(
+            _dependency_failure_message(
+                "indexing",
+                f"BM25 transcript index at {bm25_path} is empty",
+                artifact_report,
+            )
+        )
+
+    try:
+        qdrant_client = get_client(cfg.qdrant.host, cfg.qdrant.port)
+    except ImportError as exc:
+        raise PipelineDependencyError(
+            "retrieval dependency missing: qdrant-client is not installed."
+        ) from exc
+
+    _ensure_qdrant_collection_ready(qdrant_client, cfg)
+    _ensure_vllm_runtime_ready(cfg)
+    return bm25_index, qdrant_client, artifact_report
+
+
+def _discover_index_artifacts(cfg: CastleRAGConfig) -> IndexArtifactReport:
+    cache_dir = Path(cfg.embedding.cache_dir)
+    chunks_dir = Path(cfg.preprocessing.chunks_dir)
+    return IndexArtifactReport(
+        bm25_path=cache_dir / "transcripts.pkl",
+        chunks_dir=chunks_dir,
+        cache_dir=cache_dir,
+        chunk_files={
+            "transcripts": sorted(chunks_dir.rglob("transcripts.jsonl"))
+            if chunks_dir.exists()
+            else [],
+            "clips": sorted(chunks_dir.rglob("clips.jsonl"))
+            if chunks_dir.exists()
+            else [],
+            "events": sorted(chunks_dir.rglob("events.jsonl"))
+            if chunks_dir.exists()
+            else [],
+            "aux": sorted(chunks_dir.rglob("aux.jsonl")) if chunks_dir.exists() else [],
+        },
+        embedding_caches={
+            "transcripts": sorted(cache_dir.glob("transcripts*.npz"))
+            if cache_dir.exists()
+            else [],
+            "events": (
+                sorted(cache_dir.glob("events*.npz")) if cache_dir.exists() else []
+            ),
+            "clips": (
+                sorted(cache_dir.glob("clips*.npz")) if cache_dir.exists() else []
+            ),
+            "aux_text": sorted(cache_dir.glob("aux_text*.npz"))
+            if cache_dir.exists()
+            else [],
+            "aux_image": sorted(cache_dir.glob("aux_image*.npz"))
+            if cache_dir.exists()
+            else [],
+            "aux_video": sorted(cache_dir.glob("aux_video*.npz"))
+            if cache_dir.exists()
+            else [],
+        },
+    )
+
+
+def _ensure_qdrant_collection_ready(client: Any, cfg: CastleRAGConfig) -> None:
+    collection_name = cfg.qdrant.collection
+    host = cfg.qdrant.host
+    port = cfg.qdrant.port
+    try:
+        exists = _qdrant_collection_exists(client, collection_name)
+    except Exception as exc:
+        raise PipelineDependencyError(
+            "retrieval dependency missing: could not reach Qdrant at "
+            f"{host}:{port} while checking collection {collection_name!r}: {exc}"
+        ) from exc
+    if not exists:
+        raise PipelineDependencyError(
+            "retrieval dependency missing: Qdrant collection "
+            f"{collection_name!r} does not exist on {host}:{port}. "
+            "Run `castlerag index` to create and populate it."
+        )
+
+    try:
+        point_count = _qdrant_collection_count(client, collection_name)
+    except Exception as exc:
+        raise PipelineDependencyError(
+            "retrieval dependency missing: could not inspect Qdrant collection "
+            f"{collection_name!r} on {host}:{port}: {exc}"
+        ) from exc
+    if point_count == 0:
+        raise PipelineDependencyError(
+            "retrieval dependency missing: Qdrant collection "
+            f"{collection_name!r} on {host}:{port} is empty. "
+            "Run `castlerag index` to upsert dense points."
+        )
+
+
+def _qdrant_collection_exists(client: Any, collection_name: str) -> bool:
+    if hasattr(client, "collection_exists"):
+        return bool(client.collection_exists(collection_name))
+    if hasattr(client, "get_collection"):
+        try:
+            client.get_collection(collection_name)
+            return True
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "not found" in msg or "does not exist" in msg:
+                return False
+            raise
+    return True
+
+
+def _qdrant_collection_count(client: Any, collection_name: str) -> Optional[int]:
+    if not hasattr(client, "count"):
+        return None
+    response = client.count(collection_name=collection_name, exact=False)
+    if isinstance(response, int):
+        return response
+    count = getattr(response, "count", None)
+    if isinstance(count, int):
+        return count
+    return None
+
+
+def _ensure_vllm_runtime_ready(cfg: CastleRAGConfig) -> None:
+    needed_stages: List[str] = ["reranking", "generation"]
+    if cfg.embedding.backend == "vllm":
+        needed_stages.insert(0, "retrieval")
+    base_url = _vllm_base_url()
+    if not base_url:
+        raise PipelineDependencyError(
+            "runtime dependency missing: VLLM_BASE_URL is not set. "
+            "The following stages require a local vLLM endpoint: "
+            f"{', '.join(needed_stages)}."
+        )
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise PipelineDependencyError(
+            "runtime dependency missing: openai package is required for the "
+            f"vLLM-backed {', '.join(needed_stages)} stages."
+        ) from exc
+    OpenAI(base_url=base_url, api_key="not-needed")
+
+
+def _dependency_failure_message(
+    stage: str,
+    detail: str,
+    artifact_report: IndexArtifactReport,
+) -> str:
+    chunk_counts = ", ".join(
+        f"{name}={len(paths)}" for name, paths in artifact_report.chunk_files.items()
+    )
+    cache_counts = ", ".join(
+        f"{name}={len(paths)}"
+        for name, paths in artifact_report.embedding_caches.items()
+    )
+    return (
+        f"{stage} dependency missing: {detail}. "
+        f"Local chunk artifacts under {artifact_report.chunks_dir}: {chunk_counts}. "
+        f"Local embedding caches under {artifact_report.cache_dir}: {cache_counts}. "
+        "Run `castlerag preprocess` and `castlerag index` against a small "
+        "egocentric subset first."
+    )
 
 
 def _build_vllm_chat_client() -> Any:

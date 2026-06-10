@@ -184,10 +184,11 @@ def test_smoke_test_surfaces_pipeline_dependency_errors(
     q_file.write_text(
         json.dumps(
             {
-                "q1": {
-                    "query": "Test?",
+                f"q{i}": {
+                    "query": f"Test {i}?",
                     "answers": {"a": "A", "b": "B", "c": "C", "d": "D"},
                 }
+                for i in range(1, 6)
             }
         )
     )
@@ -199,3 +200,21 @@ def test_smoke_test_surfaces_pipeline_dependency_errors(
     result = runner.invoke(app, ["smoke-test", str(q_file)])
     assert result.exit_code == 1
     assert "generation is not implemented for question q1" in result.output
+
+
+def test_smoke_test_rejects_too_few_questions(tmp_path: Path):
+    q_file = tmp_path / "questions.json"
+    q_file.write_text(
+        json.dumps(
+            {
+                "q1": {
+                    "query": "Test?",
+                    "answers": {"a": "A", "b": "B", "c": "C", "d": "D"},
+                }
+            }
+        )
+    )
+
+    result = runner.invoke(app, ["smoke-test", str(q_file)])
+    assert result.exit_code == 1
+    assert "Smoke test requires at least 5 questions" in result.output

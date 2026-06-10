@@ -1,10 +1,10 @@
-"""Question router: extract hints and assign exactly one route."""
+"""Question router: structured hint extraction and route assignment."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from castlerag.schemas import QuestionRoute
 
@@ -28,6 +28,16 @@ _ROOM_PATTERNS = {
     "living1": "Living1",
     "living2": "Living2",
 }
+_DAY_PATTERNS = (
+    (re.compile(r"\bday\s*([1-4])\b"), "digit"),
+    (re.compile(r"\b(first|second|third|fourth)\s+day\b"), "ordinal"),
+)
+_DAY_ORDINALS = {
+    "first": "day1",
+    "second": "day2",
+    "third": "day3",
+    "fourth": "day4",
+}
 _TEMPORAL_KEYWORDS = frozenset(
     [
         "before",
@@ -44,6 +54,30 @@ _TEMPORAL_KEYWORDS = frozenset(
         "finally",
         "once",
     ]
+)
+_TEMPORAL_PHRASES = (
+    "what happened before",
+    "what happened after",
+    "what was happening when",
+    "in what order",
+    "at the time",
+    "by the time",
+    "right before",
+    "right after",
+)
+_TEMPORAL_DOMINANT_MARKERS = (
+    "before",
+    "after",
+    "next",
+    "previously",
+    "later",
+    "first",
+    "last",
+    "finally",
+    "once",
+    "in what order",
+    "right before",
+    "right after",
 )
 _SPEECH_KEYWORDS = frozenset(
     [
@@ -65,6 +99,17 @@ _SPEECH_KEYWORDS = frozenset(
         "hear",
         "heard",
     ]
+)
+_SPEECH_PHRASES = (
+    "what did",
+    "what was said",
+    "what did they say",
+    "what did she say",
+    "what did he say",
+    "who said",
+    "which words",
+    "what was heard",
+    "what did allie say",
 )
 _VISUAL_KEYWORDS = frozenset(
     [
@@ -89,6 +134,96 @@ _VISUAL_KEYWORDS = frozenset(
         "thermal",
     ]
 )
+_VISUAL_PHRASES = (
+    "what color",
+    "what colour",
+    "what is on",
+    "which room",
+    "where is",
+    "how many",
+    "what does",
+    "what was visible",
+    "what can be seen",
+)
+
+
+@dataclass(frozen=True)
+class RouteEvidenceProfile:
+    """Route-scoped retrieval budget and modality-priority profile."""
+
+    transcript_budget: int
+    candidate_video_budget: int
+    auxiliary_image_budget: int
+    max_evidence_rows: int
+    source_priority: Tuple[str, ...]
+
+
+_ROUTE_PROFILES: Dict[QuestionRoute, RouteEvidenceProfile] = {
+    "static_visual": RouteEvidenceProfile(
+        transcript_budget=10,
+        candidate_video_budget=4,
+        auxiliary_image_budget=16,
+        max_evidence_rows=50,
+        source_priority=(
+            "main_clip",
+            "main_event_summary",
+            "aux_photo",
+            "aux_thermal",
+            "aux_video",
+            "transcript_window",
+            "aux_gaze",
+            "aux_heartrate",
+        ),
+    ),
+    "speech_text": RouteEvidenceProfile(
+        transcript_budget=30,
+        candidate_video_budget=4,
+        auxiliary_image_budget=16,
+        max_evidence_rows=50,
+        source_priority=(
+            "transcript_window",
+            "main_event_summary",
+            "main_clip",
+            "aux_video",
+            "aux_photo",
+            "aux_gaze",
+            "aux_heartrate",
+            "aux_thermal",
+        ),
+    ),
+    "temporal": RouteEvidenceProfile(
+        transcript_budget=30,
+        candidate_video_budget=4,
+        auxiliary_image_budget=16,
+        max_evidence_rows=50,
+        source_priority=(
+            "transcript_window",
+            "main_event_summary",
+            "main_clip",
+            "aux_video",
+            "aux_photo",
+            "aux_gaze",
+            "aux_heartrate",
+            "aux_thermal",
+        ),
+    ),
+    "mixed": RouteEvidenceProfile(
+        transcript_budget=30,
+        candidate_video_budget=4,
+        auxiliary_image_budget=16,
+        max_evidence_rows=50,
+        source_priority=(
+            "transcript_window",
+            "main_clip",
+            "main_event_summary",
+            "aux_photo",
+            "aux_video",
+            "aux_thermal",
+            "aux_gaze",
+            "aux_heartrate",
+        ),
+    ),
+}
 
 
 @dataclass
@@ -101,45 +236,74 @@ class RouteHints:
     has_speech_cue: bool = False
     has_temporal_cue: bool = False
     extracted_keywords: List[str] = field(default_factory=list)
+    evidence_profile: Optional[RouteEvidenceProfile] = None
+
+    def __post_init__(self) -> None:
+        if self.evidence_profile is None:
+            self.evidence_profile = _profile_for_route(self.route)
 
 
 def route_question(
     question: str,
     choices: dict[str, str],
 ) -> RouteHints:
-    """Assign a route and extract metadata hints from the question text."""
-    text = f"{question} {' '.join(choices.values())}".lower()
-    tokens = set(re.findall(r"\b\w+\b", text))
+    """Assign one route and extract reusable retrieval hints."""
+    question_lower = question.lower()
+    tokens = set(re.findall(r"\b\w+\b", question_lower))
 
-    day = None
-    day_match = re.search(r"\bday\s*([1-4])\b", text)
-    if day_match:
-        day = f"day{day_match.group(1)}"
+    day = _extract_day(question_lower)
+    participant_matches = [
+        (m.start(), name)
+        for name in _PARTICIPANTS
+        if (m := re.search(rf"\b{re.escape(name.lower())}\b", question_lower))
+    ]
+    participant = min(participant_matches, default=(None, None))[1]
 
-    participant = next(
-        (name for name in _PARTICIPANTS if name.lower() in text),
-        None,
+    room_matches = [
+        (m.start(), normalized)
+        for phrase, normalized in _ROOM_PATTERNS.items()
+        if (m := re.search(rf"\b{re.escape(phrase)}\b", question_lower))
+    ]
+    room = min(room_matches, default=(None, None))[1]
+
+    temporal_score, temporal_hits = _cue_score(
+        question_lower,
+        tokens,
+        keywords=_TEMPORAL_KEYWORDS,
+        phrases=_TEMPORAL_PHRASES,
     )
-    room = next(
-        (normalized for phrase, normalized in _ROOM_PATTERNS.items() if phrase in text),
-        None,
+    speech_score, speech_hits = _cue_score(
+        question_lower,
+        tokens,
+        keywords=_SPEECH_KEYWORDS,
+        phrases=_SPEECH_PHRASES,
     )
+    visual_score, visual_hits = _cue_score(
+        question_lower,
+        tokens,
+        keywords=_VISUAL_KEYWORDS,
+        phrases=_VISUAL_PHRASES,
+    )
+    if room is not None:
+        visual_score += 1
+        visual_hits.append(room.lower())
 
-    has_temporal_cue = bool(tokens.intersection(_TEMPORAL_KEYWORDS))
-    has_speech_cue = bool(tokens.intersection(_SPEECH_KEYWORDS))
-    has_visual_cue = bool(tokens.intersection(_VISUAL_KEYWORDS)) or room is not None
+    has_temporal_cue = temporal_score > 0
+    has_speech_cue = speech_score > 0
+    has_visual_cue = visual_score > 0
 
-    if has_temporal_cue:
-        route: QuestionRoute = "temporal"
-    elif has_visual_cue and has_speech_cue:
-        route = "mixed"
-    elif has_speech_cue:
-        route = "speech_text"
-    else:
-        route = "static_visual"
-
+    route = _choose_route(
+        temporal_score=temporal_score,
+        speech_score=speech_score,
+        visual_score=visual_score,
+        question=question_lower,
+    )
     extracted_keywords = sorted(
-        tokens.intersection(_TEMPORAL_KEYWORDS | _SPEECH_KEYWORDS | _VISUAL_KEYWORDS)
+        {
+            *temporal_hits,
+            *speech_hits,
+            *visual_hits,
+        }
     )
     return RouteHints(
         route=route,
@@ -150,4 +314,75 @@ def route_question(
         has_speech_cue=has_speech_cue,
         has_temporal_cue=has_temporal_cue,
         extracted_keywords=extracted_keywords,
+        evidence_profile=_profile_for_route(route),
     )
+
+
+def _profile_for_route(route: QuestionRoute) -> RouteEvidenceProfile:
+    profile = _ROUTE_PROFILES[route]
+    return RouteEvidenceProfile(
+        transcript_budget=profile.transcript_budget,
+        candidate_video_budget=profile.candidate_video_budget,
+        auxiliary_image_budget=profile.auxiliary_image_budget,
+        max_evidence_rows=profile.max_evidence_rows,
+        source_priority=tuple(profile.source_priority),
+    )
+
+
+def _extract_day(text: str) -> Optional[str]:
+    for pattern, kind in _DAY_PATTERNS:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        value = match.group(1)
+        if kind == "digit":
+            return f"day{value}"
+        return _DAY_ORDINALS[value]
+    return None
+
+
+def _cue_score(
+    text: str,
+    tokens: Iterable[str],
+    *,
+    keywords: Iterable[str],
+    phrases: Iterable[str],
+) -> tuple[int, List[str]]:
+    hits: List[str] = []
+    score = 0
+    token_set = set(tokens)
+    for keyword in keywords:
+        if keyword in token_set:
+            score += 1
+            hits.append(keyword)
+    for phrase in phrases:
+        if phrase in text:
+            score += 2
+            hits.append(phrase)
+    return score, hits
+
+
+def _choose_route(
+    *,
+    temporal_score: int,
+    speech_score: int,
+    visual_score: int,
+    question: str,
+) -> QuestionRoute:
+    if _has_temporal_anchor(question) or temporal_score >= 3:
+        return "temporal"
+    if speech_score > 0 and visual_score > 0:
+        return "mixed"
+    if speech_score > visual_score and speech_score > 0:
+        return "speech_text"
+    if visual_score > speech_score and visual_score > 0:
+        return "static_visual"
+    if speech_score > 0 and visual_score > 0:
+        return "mixed"
+    if speech_score > 0:
+        return "speech_text"
+    return "static_visual"
+
+
+def _has_temporal_anchor(question: str) -> bool:
+    return any(marker in question for marker in _TEMPORAL_DOMINANT_MARKERS)

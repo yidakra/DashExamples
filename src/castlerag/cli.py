@@ -333,6 +333,12 @@ def smoke_test(
     cfg = _resolve_config(config, False)
     console.print(f"[bold]castlerag smoke-test[/bold]  n={n}")
     questions = load_questions(questions_path)
+    if len(questions) < n:
+        console.print(
+            "[red]Smoke test requires at least "
+            f"{n} questions, but {questions_path} only contains {len(questions)}.[/red]"
+        )
+        raise typer.Exit(1)
     out_dir = Path(cfg.outputs.dir) / "smoke_test"
     try:
         result = run_eval(
