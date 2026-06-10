@@ -252,18 +252,19 @@ def route_question(
     tokens = set(re.findall(r"\b\w+\b", question_lower))
 
     day = _extract_day(question_lower)
-    participant = next(
-        (name for name in _PARTICIPANTS if name.lower() in question_lower),
-        None,
-    )
-    room = next(
-        (
-            normalized
-            for phrase, normalized in _ROOM_PATTERNS.items()
-            if phrase in question_lower
-        ),
-        None,
-    )
+    participant_matches = [
+        (m.start(), name)
+        for name in _PARTICIPANTS
+        if (m := re.search(rf"\b{re.escape(name.lower())}\b", question_lower))
+    ]
+    participant = min(participant_matches, default=(None, None))[1]
+
+    room_matches = [
+        (m.start(), normalized)
+        for phrase, normalized in _ROOM_PATTERNS.items()
+        if (m := re.search(rf"\b{re.escape(phrase)}\b", question_lower))
+    ]
+    room = min(room_matches, default=(None, None))[1]
 
     temporal_score, temporal_hits = _cue_score(
         question_lower,
