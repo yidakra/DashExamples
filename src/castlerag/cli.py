@@ -13,6 +13,7 @@ from rich.console import Console
 
 from castlerag.config import CastleRAGConfig, load_config
 from castlerag.embed.omniembed import OmniEmbedClient
+from castlerag.index import get_client, load_bm25_index
 from castlerag.index.pipeline import (
     build_bm25_artifact,
     build_qdrant_index,
@@ -20,6 +21,9 @@ from castlerag.index.pipeline import (
     filter_records,
     load_chunk_records,
 )
+from castlerag.retrieval.search import retrieve as retrieve_evidence
+from castlerag.routing.question_router import route_question
+from castlerag.schemas import EvalQuestion
 
 app = typer.Typer(
     name="castlerag",
@@ -185,8 +189,44 @@ def retrieve(
     cfg = _resolve_config(config, snellius)
     console.print("[bold]castlerag retrieve[/bold]")
     console.print(f"  question : {question[:80]}")
-    console.print("[red]retrieval not yet implemented — see issue #7[/red]")
-    raise typer.Exit(1)
+    bm25_path = Path(cfg.embedding.cache_dir) / "transcripts.pkl"
+    if not bm25_path.exists():
+        console.print("[red]BM25 transcript index not found — run `castlerag index` first.[/red]")
+        raise typer.Exit(1)
+    hints = route_question(
+        question=question,
+        choices={"a": choice_a, "b": choice_b, "c": choice_c, "d": choice_d},
+    )
+    eval_question = EvalQuestion(
+        question_id="adhoc",
+        query=question,
+        answers={"a": choice_a, "b": choice_b, "c": choice_c, "d": choice_d},
+    )
+    bm25_index = load_bm25_index(bm25_path)
+    qdrant_client = get_client(cfg.qdrant.host, cfg.qdrant.port)
+    embed_client = OmniEmbedClient(
+        model=cfg.embedding.model,
+        backend=cfg.embedding.backend,
+        vllm_base_url=_vllm_base_url(),
+        vllm_tensor_parallel=cfg.embedding.vllm_tensor_parallel,
+        vllm_gpu_memory_utilization=cfg.embedding.vllm_gpu_memory_utilization,
+    )
+    hits = retrieve_evidence(
+        question=eval_question,
+        hints=hints,
+        qdrant_client=qdrant_client,
+        collection_name=cfg.qdrant.collection,
+        bm25_index=bm25_index,
+        embed_client=embed_client,
+        retrieval_cfg=cfg.retrieval,
+    )
+    console.print(f"  route    : {hints.route}")
+    console.print(f"  evidence : {len(hits)} hits")
+    for hit in hits[:10]:
+        console.print(
+            f"  [{hit.rank}] {hit.source_type} {hit.record_id} "
+            f"score={hit.score:.4f} day={hit.day} camera={hit.camera_id}"
+        )
 
 
 @app.command()
