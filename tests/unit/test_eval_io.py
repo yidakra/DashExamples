@@ -14,10 +14,16 @@ from castlerag.eval.io import (
     write_evidence_traces,
     write_predictions,
 )
-from castlerag.eval.run_eval import EvalPipeline, PipelineDependencyError, run_eval
+from castlerag.eval.run_eval import (
+    EvalPipeline,
+    PipelineDependencyError,
+    run_eval,
+)
+from castlerag.retrieval.candidate_expand import expand_candidates
 from castlerag.routing.question_router import RouteHints
 from castlerag.schemas import (
     EvalQuestion,
+    EvidencePack,
     Prediction,
     RerankResult,
     RetrievalHit,
@@ -211,12 +217,12 @@ def _fake_pipeline() -> EvalPipeline:
     def _rerank(
         question: EvalQuestion,
         hints: RouteHints,
-        candidate_packs: list[dict],
+        candidate_packs: list[EvidencePack],
     ) -> RerankResult:
         return RerankResult(
             route=hints.route,
             support_priors={"a": 1.0, "b": 0.25, "c": 0.0, "d": 0.0},
-            evidence_rows=[candidate_packs[0]["primary_hit"]],
+            evidence_rows=[candidate_packs[0].primary_hit],
         )
 
     def _generate(
@@ -241,6 +247,50 @@ def _fake_pipeline() -> EvalPipeline:
         rerank=_rerank,
         generate=_generate,
     )
+
+
+def test_expand_candidates_builds_contextual_evidence_packs():
+    transcript = _make_hit("tx_1")
+    clip = RetrievalHit(
+        rank=2,
+        score=0.8,
+        point_id="pt_clip",
+        record_id="clip_1",
+        source_type="main_clip",
+        modality="video",
+        day="day1",
+        camera_id="Allie",
+        participant_id="Allie",
+        absolute_start=1_672_531_200_000,
+        absolute_end=1_672_531_230_000,
+        event_summary="Allie speaks in the kitchen.",
+        asset_path="/tmp/clip.mp4",
+    )
+    aux = RetrievalHit(
+        rank=3,
+        score=0.7,
+        point_id="pt_aux",
+        record_id="aux_1",
+        source_type="aux_photo",
+        modality="image",
+        day="day1",
+        camera_id=None,
+        participant_id="Allie",
+        absolute_start=1_672_531_205_000,
+        absolute_end=1_672_531_205_001,
+        ocr_text="Receipt on counter",
+        asset_path="/tmp/photo.jpg",
+    )
+    packs = expand_candidates(
+        [transcript, clip, aux],
+        route="speech_text",
+        max_candidate_videos=4,
+        frames_per_candidate=32,
+    )
+    assert packs
+    assert any(pack.transcript_evidence for pack in packs)
+    assert any(pack.event_summaries for pack in packs)
+    assert any(pack.auxiliary_notes for pack in packs)
 
 
 def test_run_eval_writes_predictions_submission_and_metrics(tmp_path: Path):

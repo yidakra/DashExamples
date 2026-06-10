@@ -308,6 +308,7 @@ def generate_answer(
     evidence_rows: List[RetrievalHit],
     support_priors: Dict[str, float],
     llm_client: Any,
+    model: str = "Qwen/Qwen3-VL-8B-Instruct",
     max_evidence_rows: int = 50,
 ) -> Prediction:
     """Run grounded answer generation and return a normalized Prediction."""
@@ -319,7 +320,7 @@ def generate_answer(
         support_priors=support_priors,
         max_evidence_rows=max_evidence_rows,
     )
-    raw_answer_text = _call_generation_llm(llm_client, messages)
+    raw_answer_text = _call_generation_llm_with_model(llm_client, messages, model=model)
     predicted_answer = extract_answer(raw_answer_text, support_priors)
     return Prediction(
         question_id=question.question_id,
@@ -335,3 +336,24 @@ def generate_answer(
             raw_text=raw_answer_text,
         ),
     )
+
+
+def _call_generation_llm_with_model(
+    llm_client: Any,
+    messages: List[Dict[str, str]],
+    *,
+    model: str,
+) -> str:
+    if hasattr(llm_client, "generate_from_messages"):
+        return str(llm_client.generate_from_messages(messages))
+    if hasattr(llm_client, "chat") and hasattr(llm_client.chat, "completions"):
+        response = llm_client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=512,
+            temperature=0.0,
+        )
+        if not response.choices:
+            return ""
+        return str(response.choices[0].message.content or "")
+    return _call_generation_llm(llm_client, messages)

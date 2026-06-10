@@ -230,10 +230,11 @@ def test_generate_answer_supports_openai_compatible_vllm_client():
         evidence_rows=[_make_hit()],
         support_priors={"a": 0.1, "b": 0.1, "c": 0.0, "d": 0.9},
         llm_client=client,
+        model="OpenGVLab/InternVL3-8B",
     )
     assert prediction.predicted_answer == "d"
     assert client.calls
-    assert client.calls[0]["model"] == "Qwen/Qwen3-VL-8B-Instruct"
+    assert client.calls[0]["model"] == "OpenGVLab/InternVL3-8B"
 
 
 def test_generate_answer_drops_confidence_on_low_confidence_language():

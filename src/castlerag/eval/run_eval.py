@@ -31,6 +31,7 @@ from castlerag.eval.io import (
 from castlerag.generation.answer import generate_answer
 from castlerag.index import get_client, load_bm25_index
 from castlerag.rerank.llm_reranker import rerank_candidates
+from castlerag.retrieval.candidate_expand import expand_candidates
 from castlerag.retrieval.search import retrieve as retrieve_evidence
 from castlerag.routing.question_router import RouteHints, route_question
 from castlerag.schemas import EvalQuestion, Prediction, RerankResult, RetrievalHit
@@ -110,7 +111,12 @@ def run_eval(
         except NotImplementedError as exc:
             raise _stage_error("retrieval", question.question_id, exc) from exc
 
-        candidate_packs = _candidate_packs_from_hits(retrieved)
+        candidate_packs = expand_candidates(
+            retrieved,
+            route=hints.route,
+            max_candidate_videos=cfg.retrieval.max_candidate_videos,
+            frames_per_candidate=cfg.retrieval.frames_per_candidate,
+        )
         try:
             reranked = active_pipeline.rerank(question, hints, candidate_packs)
         except NotImplementedError as exc:
@@ -237,6 +243,7 @@ def _build_default_pipeline(cfg: CastleRAGConfig) -> EvalPipeline:
             llm_client=generation_client,
             top_k=cfg.reranking.top_k,
             min_relevance=cfg.reranking.min_relevance,
+            model=cfg.reranking.model,
         )
 
     def _generate(
@@ -251,6 +258,7 @@ def _build_default_pipeline(cfg: CastleRAGConfig) -> EvalPipeline:
             evidence_rows=evidence_rows,
             support_priors=support_priors,
             llm_client=generation_client,
+            model=cfg.generation.model,
             max_evidence_rows=cfg.retrieval.max_evidence_rows,
         )
 
@@ -260,19 +268,6 @@ def _build_default_pipeline(cfg: CastleRAGConfig) -> EvalPipeline:
         rerank=_rerank,
         generate=_generate,
     )
-
-
-def _candidate_packs_from_hits(hits: List[RetrievalHit]) -> List[dict]:
-    return [
-        {
-            "rank": rank,
-            "record_id": hit.record_id,
-            "primary_hit": hit,
-            "evidence_rows": [hit],
-        }
-        for rank, hit in enumerate(hits, start=1)
-    ]
-
 
 def _flatten_reranked_evidence(
     reranked: RerankResult,
