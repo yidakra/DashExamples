@@ -170,7 +170,13 @@ def load_supervised_split(split: LoRASplitPaths) -> List[LoRATrainingExample]:
     """Load question JSON plus answer-key JSON into answer-only MCQA examples."""
 
     questions = load_questions(split.questions_path)
-    answers = json.loads(split.answers_path.read_text())
+    try:
+        answers = json.loads(split.answers_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LoRABlockedError(
+            f"LoRA training is blocked: failed to read/parse "
+            f"{split.split_name} answer key JSON at {split.answers_path}."
+        ) from exc
     if not isinstance(answers, dict):
         raise LoRABlockedError(
             f"LoRA training is blocked: {split.split_name} answer key must be a "
