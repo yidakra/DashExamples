@@ -174,6 +174,7 @@ class AuxRecord(BaseModel):
     raw_features: Optional[Dict[str, Any]] = None
     linked_main_clip_ids: List[str] = Field(default_factory=list)
     linked_event_summary_ids: List[str] = Field(default_factory=list)
+    has_reliable_timestamp: bool = True
     version: str = "0.1.0"
 
     @field_validator("absolute_end")

@@ -22,6 +22,7 @@ def _aux_record(
     absolute_start: int,
     absolute_end: int,
     summary_text: Optional[str] = None,
+    has_reliable_timestamp: bool = True,
     version: str = "0.1.0",
 ) -> AuxRecord:
     id_material = "|".join(
@@ -49,6 +50,7 @@ def _aux_record(
         summary_text=summary_text,
         absolute_start=absolute_start,
         absolute_end=absolute_end,
+        has_reliable_timestamp=has_reliable_timestamp,
         version=version,
     )
 
@@ -107,6 +109,7 @@ def iter_photo_records(
         if abs_start is None:
             ts_hint = _extract_timestamp_hint(f)
             abs_start = _parse_hint_to_ms(ts_hint) if ts_hint else 0
+        reliable = abs_start != 0
         abs_end = abs_start + 1
         yield _aux_record(
             source_type="aux_photo",
@@ -115,6 +118,8 @@ def iter_photo_records(
             path=f,
             absolute_start=abs_start,
             absolute_end=abs_end,
+            summary_text=f"Photo by {participant}",
+            has_reliable_timestamp=reliable,
             version=version,
         )
 
@@ -133,8 +138,10 @@ def iter_thermal_records(
             continue
         abs_start = 0
         ts_hint = _extract_timestamp_hint(f)
+        reliable = False
         if ts_hint:
             abs_start = _parse_hint_to_ms(ts_hint)
+            reliable = abs_start != 0
         abs_end = abs_start + 1
         yield _aux_record(
             source_type="aux_thermal",
@@ -143,6 +150,8 @@ def iter_thermal_records(
             path=f,
             absolute_start=abs_start,
             absolute_end=abs_end,
+            summary_text="Thermal frame",
+            has_reliable_timestamp=reliable,
             version=version,
         )
 
