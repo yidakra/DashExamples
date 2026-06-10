@@ -183,8 +183,8 @@ def _build_inmemory_index(
     embed_client: Any,
     dim: int,
     tmp_dir: Path,
-) -> tuple[Any, Any]:
-    """Return (bm25_bundle, qdrant_client) with synthetic records ingested."""
+) -> tuple[Any, Any, str]:
+    """Return (bm25_bundle, qdrant_client, collection_name) with synthetic records."""
     from qdrant_client import QdrantClient
     from qdrant_client.http import models as qm
 
@@ -413,7 +413,9 @@ def main() -> None:
             )
         print(f"Mode: real  (vLLM endpoint: {vllm_url})")
         embed_client, llm_client = _build_real_clients(vllm_url)
-        dim = None  # discovered after first embed call
+        sample = embed_client.embed_texts(["dimension probe"])
+        dim = int(sample.shape[1])
+        print(f"  embedding dimension: {dim}")
     else:
         print("Mode: stub  (random embeddings + stub LLM — wiring check only)")
         embed_client = _StubEmbedClient()
@@ -424,10 +426,7 @@ def main() -> None:
         tmp_dir = Path(tmp)
         print("\nBuilding in-memory index...")
         t0 = time.perf_counter()
-        effective_dim = dim or _STUB_DIM
-        bm25, qdrant, collection = _build_inmemory_index(
-            embed_client, effective_dim, tmp_dir
-        )
+        bm25, qdrant, collection = _build_inmemory_index(embed_client, dim, tmp_dir)
         print(f"  index ready in {time.perf_counter() - t0:.1f}s")
 
         pipeline = _build_pipeline(embed_client, llm_client, bm25, qdrant, collection)
