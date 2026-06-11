@@ -35,3 +35,13 @@ logs/
 
 # Environment config with secrets
 .env
+
+# Report / paper (private, not part of the submission)
+/report.tex
+/report.pdf
+/report.aux
+/report.log
+/report.bbl
+/report.blg
+/report.out
+/report.synctex.gz

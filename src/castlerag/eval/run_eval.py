@@ -23,6 +23,7 @@ from castlerag.config import CastleRAGConfig, load_config
 from castlerag.embed.omniembed import OmniEmbedClient
 from castlerag.eval.io import (
     compute_accuracy,
+    compute_diversity_metrics,
     export_submission,
     select_questions,
     write_evidence_traces,
@@ -51,6 +52,8 @@ class PipelineDependencyError(RuntimeError):
 
 @dataclass(frozen=True)
 class EvalOutputPaths:
+    """Resolved file paths for all eval output artefacts."""
+
     predictions: Path
     evidence_traces: Path
     submissions: Path
@@ -59,14 +62,19 @@ class EvalOutputPaths:
 
 @dataclass(frozen=True)
 class EvalRunResult:
+    """Return value of run_eval: predictions, traces, paths, and optional metrics."""
+
     predictions: Dict[str, Prediction]
     traces: List[dict]
     output_paths: EvalOutputPaths
     accuracy: Optional[float] = None
+    diversity: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
 class IndexArtifactReport:
+    """Inventory of local index artefacts used for dependency diagnostics."""
+
     bm25_path: Path
     chunks_dir: Path
     cache_dir: Path
@@ -76,6 +84,8 @@ class IndexArtifactReport:
 
 @dataclass(frozen=True)
 class EvalPipeline:
+    """Pluggable pipeline of callables used by run_eval (enables test injection)."""
+
     route: Callable[[str, Dict[str, str]], RouteHints]
     retrieve: Callable[[EvalQuestion, RouteHints], List[RetrievalHit]]
     rerank: Callable[
@@ -101,7 +111,9 @@ def run_eval(
     """Run the full prediction loop and write output files.
 
     The runner writes rich predictions, evidence traces, official submission
-    export, and metrics when a ground-truth key is available.
+    export, and metrics for every run. Accuracy is populated only when a
+    ground-truth key is available; diversity, counts, and paths are always
+    written to outputs.metrics.
     """
     cfg = load_config(override_path=config_path)
     selected = select_questions(
@@ -188,6 +200,9 @@ def run_eval(
                 "retrieved_count": len(retrieved),
                 "reranked_count": len(rerank_result.kept_packs),
                 "top_evidence_ids": prediction.top_evidence_ids,
+                "top_evidence_cameras": sorted(
+                    {h.camera_id for h in evidence_rows if h.camera_id is not None}
+                ),
                 "support_priors": prediction.support_priors or support_priors,
                 "predicted_answer": prediction.predicted_answer,
             }
@@ -197,27 +212,32 @@ def run_eval(
     write_evidence_traces(traces, outputs.evidence_traces)
     export_submission(predictions, outputs.submissions)
 
+    diversity = compute_diversity_metrics(traces)
+
     accuracy: Optional[float] = None
     if answers_path is not None:
         accuracy = compute_accuracy(selected, predictions, answers_path)
-        outputs.metrics.parent.mkdir(parents=True, exist_ok=True)
-        outputs.metrics.write_text(
-            json.dumps(
-                {
-                    "accuracy": accuracy,
-                    "num_questions": len(selected),
-                    "predictions_path": str(outputs.predictions),
-                    "submission_path": str(outputs.submissions),
-                },
-                indent=2,
-            )
+
+    outputs.metrics.parent.mkdir(parents=True, exist_ok=True)
+    outputs.metrics.write_text(
+        json.dumps(
+            {
+                "accuracy": accuracy,
+                "num_questions": len(selected),
+                "diversity": diversity,
+                "predictions_path": str(outputs.predictions),
+                "submission_path": str(outputs.submissions),
+            },
+            indent=2,
         )
+    )
 
     return EvalRunResult(
         predictions=predictions,
         traces=traces,
         output_paths=outputs,
         accuracy=accuracy,
+        diversity=diversity,
     )
 
 

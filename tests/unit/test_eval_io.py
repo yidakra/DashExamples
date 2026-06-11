@@ -10,6 +10,7 @@ import pytest
 from castlerag.config import CastleRAGConfig
 from castlerag.eval.io import (
     compute_accuracy,
+    compute_diversity_metrics,
     export_submission,
     load_predictions,
     load_questions,
@@ -252,6 +253,67 @@ def _fake_pipeline() -> EvalPipeline:
         rerank=_rerank,
         generate=_generate,
     )
+
+
+def test_compute_diversity_metrics_empty():
+    result = compute_diversity_metrics([])
+    assert result["mean_cameras_per_question"] == 0.0
+    assert result["pct_multi_camera"] == 0.0
+    assert result["camera_count_distribution"] == {}
+
+
+def test_compute_diversity_metrics_single_camera():
+    traces = [
+        {"top_evidence_cameras": ["Allie"]},
+        {"top_evidence_cameras": ["Allie"]},
+    ]
+    result = compute_diversity_metrics(traces)
+    assert result["mean_cameras_per_question"] == 1.0
+    assert result["pct_multi_camera"] == 0.0
+    assert result["camera_count_distribution"] == {1: 2}
+
+
+def test_compute_diversity_metrics_multi_camera():
+    traces = [
+        {"top_evidence_cameras": ["Allie", "Bjorn", "Cathal"]},
+        {"top_evidence_cameras": ["Allie", "Bjorn"]},
+        {"top_evidence_cameras": ["Allie"]},
+    ]
+    result = compute_diversity_metrics(traces)
+    assert result["mean_cameras_per_question"] == pytest.approx(2.0)
+    assert result["pct_multi_camera"] == pytest.approx(2 / 3)
+    assert result["camera_count_distribution"] == {1: 1, 2: 1, 3: 1}
+
+
+def test_compute_diversity_metrics_ignores_none_cameras():
+    traces = [{"top_evidence_cameras": [None, "Allie", None, "Bjorn"]}]
+    result = compute_diversity_metrics(traces)
+    assert result["mean_cameras_per_question"] == 2.0
+    assert result["pct_multi_camera"] == 1.0
+
+
+def test_compute_diversity_metrics_missing_key():
+    traces = [{"top_evidence_ids": ["id1"]}, {"top_evidence_cameras": ["Allie"]}]
+    result = compute_diversity_metrics(traces)
+    assert result["camera_count_distribution"] == {0: 1, 1: 1}
+
+
+def test_run_eval_traces_include_cameras_and_metrics_include_diversity(tmp_path: Path):
+    q_path = _write_questions(tmp_path, _QUESTIONS_RAW)
+    qs = load_questions(q_path)
+    answers_path = _write_answers(tmp_path, {"q1": "a", "q2": "a"})
+    result = run_eval(
+        qs,
+        answers_path=answers_path,
+        out_dir=tmp_path / "outputs",
+        pipeline=_fake_pipeline(),
+    )
+
+    assert all("top_evidence_cameras" in t for t in result.traces)
+    assert result.diversity is not None
+    assert "pct_multi_camera" in result.diversity
+    metrics = json.loads(result.output_paths.metrics.read_text())
+    assert "diversity" in metrics
 
 
 def test_expand_candidates_builds_contextual_evidence_packs():

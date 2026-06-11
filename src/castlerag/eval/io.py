@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Any, Dict, Iterable, List
 
 from castlerag.schemas import EvalQuestion, Prediction
 
@@ -77,6 +77,37 @@ def compute_accuracy(
         if pred is not None and pred.predicted_answer == truth:
             correct += 1
     return correct / graded if graded > 0 else 0.0
+
+
+def compute_diversity_metrics(traces: List[dict]) -> Dict[str, Any]:
+    """Camera diversity across evidence traces.
+
+    For each trace, counts the unique camera IDs in ``top_evidence_cameras``.
+    Returns mean cameras per question, fraction of questions with ≥2 cameras,
+    and the full count distribution.
+    """
+    if not traces:
+        return {
+            "mean_cameras_per_question": 0.0,
+            "pct_multi_camera": 0.0,
+            "camera_count_distribution": {},
+        }
+
+    counts: List[int] = []
+    for trace in traces:
+        cameras = trace.get("top_evidence_cameras") or []
+        counts.append(len({c for c in cameras if c}))
+
+    total = len(counts)
+    dist: Dict[int, int] = {}
+    for c in counts:
+        dist[c] = dist.get(c, 0) + 1
+
+    return {
+        "mean_cameras_per_question": sum(counts) / total,
+        "pct_multi_camera": sum(1 for c in counts if c >= 2) / total,
+        "camera_count_distribution": dist,
+    }
 
 
 def select_questions(
