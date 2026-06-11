@@ -37,11 +37,11 @@ logs/
 .env
 
 # Report / paper (private, not part of the submission)
-*.tex
-*.pdf
-*.aux
-*.log
-*.bbl
-*.blg
-*.out
-*.synctex.gz
+/report.tex
+/report.pdf
+/report.aux
+/report.log
+/report.bbl
+/report.blg
+/report.out
+/report.synctex.gz

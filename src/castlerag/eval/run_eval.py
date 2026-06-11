@@ -52,6 +52,8 @@ class PipelineDependencyError(RuntimeError):
 
 @dataclass(frozen=True)
 class EvalOutputPaths:
+    """Resolved file paths for all eval output artefacts."""
+
     predictions: Path
     evidence_traces: Path
     submissions: Path
@@ -60,6 +62,8 @@ class EvalOutputPaths:
 
 @dataclass(frozen=True)
 class EvalRunResult:
+    """Return value of run_eval: predictions, traces, paths, and optional metrics."""
+
     predictions: Dict[str, Prediction]
     traces: List[dict]
     output_paths: EvalOutputPaths
@@ -69,6 +73,8 @@ class EvalRunResult:
 
 @dataclass(frozen=True)
 class IndexArtifactReport:
+    """Inventory of local index artefacts used for dependency diagnostics."""
+
     bm25_path: Path
     chunks_dir: Path
     cache_dir: Path
@@ -78,6 +84,8 @@ class IndexArtifactReport:
 
 @dataclass(frozen=True)
 class EvalPipeline:
+    """Pluggable pipeline of callables used by run_eval (enables test injection)."""
+
     route: Callable[[str, Dict[str, str]], RouteHints]
     retrieve: Callable[[EvalQuestion, RouteHints], List[RetrievalHit]]
     rerank: Callable[
@@ -103,7 +111,9 @@ def run_eval(
     """Run the full prediction loop and write output files.
 
     The runner writes rich predictions, evidence traces, official submission
-    export, and metrics when a ground-truth key is available.
+    export, and metrics for every run. Accuracy is populated only when a
+    ground-truth key is available; diversity, counts, and paths are always
+    written to outputs.metrics.
     """
     cfg = load_config(override_path=config_path)
     selected = select_questions(
