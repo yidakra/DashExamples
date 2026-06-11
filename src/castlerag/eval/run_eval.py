@@ -23,6 +23,7 @@ from castlerag.config import CastleRAGConfig, load_config
 from castlerag.embed.omniembed import OmniEmbedClient
 from castlerag.eval.io import (
     compute_accuracy,
+    compute_diversity_metrics,
     export_submission,
     select_questions,
     write_evidence_traces,
@@ -63,6 +64,7 @@ class EvalRunResult:
     traces: List[dict]
     output_paths: EvalOutputPaths
     accuracy: Optional[float] = None
+    diversity: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -188,6 +190,9 @@ def run_eval(
                 "retrieved_count": len(retrieved),
                 "reranked_count": len(rerank_result.kept_packs),
                 "top_evidence_ids": prediction.top_evidence_ids,
+                "top_evidence_cameras": sorted(
+                    {h.camera_id for h in evidence_rows if h.camera_id is not None}
+                ),
                 "support_priors": prediction.support_priors or support_priors,
                 "predicted_answer": prediction.predicted_answer,
             }
@@ -197,27 +202,32 @@ def run_eval(
     write_evidence_traces(traces, outputs.evidence_traces)
     export_submission(predictions, outputs.submissions)
 
+    diversity = compute_diversity_metrics(traces)
+
     accuracy: Optional[float] = None
     if answers_path is not None:
         accuracy = compute_accuracy(selected, predictions, answers_path)
-        outputs.metrics.parent.mkdir(parents=True, exist_ok=True)
-        outputs.metrics.write_text(
-            json.dumps(
-                {
-                    "accuracy": accuracy,
-                    "num_questions": len(selected),
-                    "predictions_path": str(outputs.predictions),
-                    "submission_path": str(outputs.submissions),
-                },
-                indent=2,
-            )
+
+    outputs.metrics.parent.mkdir(parents=True, exist_ok=True)
+    outputs.metrics.write_text(
+        json.dumps(
+            {
+                "accuracy": accuracy,
+                "num_questions": len(selected),
+                "diversity": diversity,
+                "predictions_path": str(outputs.predictions),
+                "submission_path": str(outputs.submissions),
+            },
+            indent=2,
         )
+    )
 
     return EvalRunResult(
         predictions=predictions,
         traces=traces,
         output_paths=outputs,
         accuracy=accuracy,
+        diversity=diversity,
     )
 
 
