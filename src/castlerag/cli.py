@@ -103,16 +103,23 @@ def preprocess(
         "--aux",
         help="Normalize auxiliary modalities (photo, thermal, video)",
     ),
+    skip_base: bool = typer.Option(
+        False,
+        "--skip-base",
+        help="Skip the base windowing/frame-extraction/transcript pass. "
+        "Useful when rerunning --caption/--events over already-extracted artifacts.",
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print actions without writing files"
     ),
 ) -> None:
     """Discover CASTLE files and build normalized preprocessing artifacts.
 
-    Base phase (always): windows, 1 fps frames, transcript normalization.
-    --caption : annotate each clip with visual caption + OCR  (GPU / vLLM)
-    --events  : compress 4-clip groups into event summaries   (GPU / vLLM)
-    --aux     : normalize photo, thermal, auxiliary video     (CPU)
+    Base phase (default): windows, 1 fps frames, transcript normalization.
+    --skip-base : skip the base pass entirely (assumes chunks already exist).
+    --caption   : annotate each clip with visual caption + OCR  (GPU / vLLM)
+    --events    : compress 4-clip groups into event summaries   (GPU / vLLM)
+    --aux       : normalize photo, thermal, auxiliary video     (CPU)
     """
     from castlerag.dataset.layout import discover_hours
     from castlerag.dataset.transcripts import load_raw_segments, merge_into_windows
@@ -154,7 +161,13 @@ def preprocess(
     # Base phase: windowing + frames + transcript normalization            #
     # ------------------------------------------------------------------ #
     n_clips = n_windows = 0
-    for asset in discover_hours(
+    if skip_base:
+        console.print(
+            "  base          : skipped (--skip-base); reusing existing chunks"
+        )
+        # Per-asset skip happens inside the loop below; with skip_base we bypass
+        # the loop entirely so caption/events run directly over existing files.
+    for asset in [] if skip_base else discover_hours(
         root=root,
         ego_cameras=cfg.dataset.ego_cameras,
         exo_cameras=cfg.dataset.exo_cameras,
@@ -254,9 +267,19 @@ def preprocess(
         n_clips += len(clips)
         n_windows += len(tw_list)
 
-    console.print(
-        f"  base          : {n_clips} clips, {n_windows} transcript windows written"
-    )
+    if not skip_base:
+        console.print(
+            f"  base          : {n_clips} clips, {n_windows} transcript windows written"
+        )
+
+    # Scope caption/events to the same days as the base pass.  Without this,
+    # --skip-base --day N would still pick up other days' chunks via rglob.
+    day_chunk_roots = [chunks_dir / f"day{d}" for d in days_list]
+
+    def _iter_clip_paths():
+        for root in day_chunk_roots:
+            if root.exists():
+                yield from sorted(root.rglob("clips.jsonl"))
 
     # ------------------------------------------------------------------ #
     # Caption / OCR phase                                                  #
@@ -267,7 +290,7 @@ def preprocess(
 
         vllm_url = _vllm_base_url()
         n_annotated = 0
-        for clips_path in sorted(chunks_dir.rglob("clips.jsonl")):
+        for clips_path in _iter_clip_paths():
             clip_records = load_clip_records(clips_path)
             updated: list[ClipRecord] = []
             for cr in clip_records:
@@ -305,7 +328,7 @@ def preprocess(
 
         vllm_url = _vllm_base_url()
         n_events = 0
-        for clips_path in sorted(chunks_dir.rglob("clips.jsonl")):
+        for clips_path in _iter_clip_paths():
             clip_records = [
                 cr for cr in load_clip_records(clips_path) if not cr.is_placeholder
             ]
