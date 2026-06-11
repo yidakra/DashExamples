@@ -31,7 +31,10 @@ def _frame_to_b64(path: Path, max_edge: int = _MAX_FRAME_EDGE) -> str:
         w, h = im.size
         scale = min(1.0, max_edge / max(w, h))
         if scale < 1.0:
-            im = im.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            # Clamp to >=1 px so extremely thin frames don't crash resize().
+            new_w = max(1, int(round(w * scale)))
+            new_h = max(1, int(round(h * scale)))
+            im = im.resize((new_w, new_h), Image.LANCZOS)
         buf = io.BytesIO()
         im.save(buf, format="JPEG", quality=85)
         return base64.b64encode(buf.getvalue()).decode()

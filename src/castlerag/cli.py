@@ -272,6 +272,15 @@ def preprocess(
             f"  base          : {n_clips} clips, {n_windows} transcript windows written"
         )
 
+    # Scope caption/events to the same days as the base pass.  Without this,
+    # --skip-base --day N would still pick up other days' chunks via rglob.
+    day_chunk_roots = [chunks_dir / f"day{d}" for d in days_list]
+
+    def _iter_clip_paths():
+        for root in day_chunk_roots:
+            if root.exists():
+                yield from sorted(root.rglob("clips.jsonl"))
+
     # ------------------------------------------------------------------ #
     # Caption / OCR phase                                                  #
     # ------------------------------------------------------------------ #
@@ -281,7 +290,7 @@ def preprocess(
 
         vllm_url = _vllm_base_url()
         n_annotated = 0
-        for clips_path in sorted(chunks_dir.rglob("clips.jsonl")):
+        for clips_path in _iter_clip_paths():
             clip_records = load_clip_records(clips_path)
             updated: list[ClipRecord] = []
             for cr in clip_records:
@@ -319,7 +328,7 @@ def preprocess(
 
         vllm_url = _vllm_base_url()
         n_events = 0
-        for clips_path in sorted(chunks_dir.rglob("clips.jsonl")):
+        for clips_path in _iter_clip_paths():
             clip_records = [
                 cr for cr in load_clip_records(clips_path) if not cr.is_placeholder
             ]
