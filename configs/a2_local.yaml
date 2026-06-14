@@ -41,6 +41,11 @@ generation:
   model: "qwen3vl"
 reranking:
   model: "qwen3vl"
+  # We only indexed day-1 hours 08-13, so even strong evidence often scores
+  # low.  Lowering min_relevance from 1 to 0 keeps weak packs in the rerank
+  # output, which materialises non-zero support priors for the fallback
+  # answer-extraction path instead of leaving every prior at 0.0.
+  min_relevance: 0
 
 qdrant:
   host: "localhost"
