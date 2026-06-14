@@ -149,9 +149,9 @@ def test_choice_permutation_is_a_bijection_and_deterministic():
 
 
 def test_choice_permutation_is_not_identity_in_aggregate():
+    identity = {letter: letter for letter in "abcd"}
     identical = sum(
-        choice_permutation(f"q{i:04d}") == {l: l for l in "abcd"}
-        for i in range(64)
+        choice_permutation(f"q{i:04d}") == identity for i in range(64)
     )
     # The identity permutation has 1/24 probability; far more than 1 of 64
     # questions returning identity would indicate a bug, not bad luck.
