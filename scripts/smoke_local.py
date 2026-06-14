@@ -154,9 +154,18 @@ class _StubLLMClient:
 
 
 def _build_real_clients(
-    vllm_url: str,
+    embed_url: str | None,
+    gen_url: str,
+    embed_model: str,
+    stub_embed: bool = False,
 ) -> tuple[Any, Any]:
-    """Return (embed_client, llm_client) using a real vLLM/Ollama endpoint."""
+    """Return (embed_client, llm_client).
+
+    When `stub_embed` is True or `embed_url` is None, the embed client is a
+    stub that yields random unit vectors — useful when only one vLLM model
+    fits on the available GPUs and we want to exercise the chat path against
+    a real generation server.
+    """
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -164,13 +173,16 @@ def _build_real_clients(
             "openai package required for --real mode: pip install openai\n"
             f"Original error: {exc}"
         )
-    from castlerag.embed.omniembed import OmniEmbedClient
-
-    embed = OmniEmbedClient(
-        backend="vllm",
-        vllm_base_url=vllm_url,
-    )
-    llm = OpenAI(base_url=vllm_url, api_key="not-needed")
+    if stub_embed or not embed_url:
+        embed: Any = _StubEmbedClient()
+    else:
+        from castlerag.embed.omniembed import OmniEmbedClient
+        embed = OmniEmbedClient(
+            model=embed_model,
+            backend="vllm",
+            vllm_base_url=embed_url,
+        )
+    llm = OpenAI(base_url=gen_url, api_key="not-needed")
     return embed, llm
 
 
@@ -284,16 +296,9 @@ def _build_inmemory_index(
         model_version="smoke-stub",
         model_name="stub",
     )
-    import uuid as _uuid
-
-    # In-memory Qdrant requires UUID-format point IDs (real Qdrant accepts any string).
-    # Convert SHA-1 hex IDs by truncating to 32 chars and formatting as UUID.
-    raw_ids = [row.point_id for row in point_rows]
-    uuid_ids = [str(_uuid.UUID(hex=pid[:32])) for pid in raw_ids]
+    # make_point_id now returns UUIDv5 strings directly — usable as Qdrant ids.
+    uuid_ids = [row.point_id for row in point_rows]
     payloads = [row.model_dump(exclude_none=True) for row in point_rows]
-    # Override point_id in payload to match the UUID we're actually using.
-    for pay, uid in zip(payloads, uuid_ids):
-        pay["point_id"] = uid
 
     vectors = embed_client.embed_texts(
         [r.transcript_text if hasattr(r, "transcript_text") else "stub"
@@ -321,6 +326,7 @@ def _build_pipeline(
     bm25_bundle: Any,
     qdrant_client: Any,
     collection: str,
+    gen_model: str = "stub",
 ) -> Any:
     from castlerag.config import CastleRAGConfig
     from castlerag.eval.run_eval import EvalPipeline
@@ -351,7 +357,7 @@ def _build_pipeline(
             llm_client=llm_client,
             top_k=cfg.reranking.top_k,
             min_relevance=0,
-            model="stub",
+            model=gen_model,
         )
 
     def generate(
@@ -366,7 +372,7 @@ def _build_pipeline(
             evidence_rows=evidence,
             support_priors=support,
             llm_client=llm_client,
-            model="stub",
+            model=gen_model,
             max_evidence_rows=cfg.retrieval.max_evidence_rows,
         )
 
@@ -393,7 +399,34 @@ def main() -> None:
     parser.add_argument(
         "--vllm-url",
         default=None,
-        help="Override VLLM_BASE_URL for --real mode",
+        help="Override VLLM_BASE_URL for --real mode (used as default for "
+        "--embed-url and --gen-url when those are not set)",
+    )
+    parser.add_argument(
+        "--embed-url",
+        default=None,
+        help="Dedicated embedding endpoint URL (defaults to --vllm-url)",
+    )
+    parser.add_argument(
+        "--gen-url",
+        default=None,
+        help="Dedicated generation endpoint URL (defaults to --vllm-url)",
+    )
+    parser.add_argument(
+        "--embed-model",
+        default="omniembed",
+        help="Served model name to pass to the embed endpoint",
+    )
+    parser.add_argument(
+        "--gen-model",
+        default="qwen3vl",
+        help="Served model name to pass to the chat completions endpoint",
+    )
+    parser.add_argument(
+        "--stub-embed",
+        action="store_true",
+        help="Use random unit vectors instead of a real embedder (when only "
+        "the generation server is online)",
     )
     args = parser.parse_args()
 
@@ -403,16 +436,28 @@ def main() -> None:
     print("CastleRAG local smoke test")
     print("=" * 50)
 
+    gen_model = args.gen_model
     if args.real:
         vllm_url = args.vllm_url or os.environ.get("VLLM_BASE_URL")
-        if not vllm_url:
+        gen_url = args.gen_url or vllm_url
+        embed_url = args.embed_url or vllm_url
+        if not gen_url:
             sys.exit(
-                "Set VLLM_BASE_URL or pass --vllm-url when using --real mode.\n"
-                "Example: VLLM_BASE_URL=http://localhost:11434/v1 "
-                "python scripts/smoke_local.py --real"
+                "Set VLLM_BASE_URL or pass --vllm-url / --gen-url when using "
+                "--real mode.\n"
+                "Example: --gen-url http://localhost:8201/v1 "
+                "--embed-url http://localhost:8200/v1"
             )
-        print(f"Mode: real  (vLLM endpoint: {vllm_url})")
-        embed_client, llm_client = _build_real_clients(vllm_url)
+        print(
+            f"Mode: real  (gen: {gen_url} model={gen_model}, "
+            f"embed: {'stub' if args.stub_embed or not embed_url else embed_url})"
+        )
+        embed_client, llm_client = _build_real_clients(
+            embed_url=embed_url,
+            gen_url=gen_url,
+            embed_model=args.embed_model,
+            stub_embed=args.stub_embed,
+        )
         sample = embed_client.embed_texts(["dimension probe"])
         dim = int(sample.shape[1])
         print(f"  embedding dimension: {dim}")
@@ -420,6 +465,7 @@ def main() -> None:
         print("Mode: stub  (random embeddings + stub LLM — wiring check only)")
         embed_client = _StubEmbedClient()
         llm_client = _StubLLMClient()  # type: ignore[assignment]
+        gen_model = "stub"
         dim = _STUB_DIM
 
     with tempfile.TemporaryDirectory(prefix="castlerag_smoke_") as tmp:
@@ -429,7 +475,9 @@ def main() -> None:
         bm25, qdrant, collection = _build_inmemory_index(embed_client, dim, tmp_dir)
         print(f"  index ready in {time.perf_counter() - t0:.1f}s")
 
-        pipeline = _build_pipeline(embed_client, llm_client, bm25, qdrant, collection)
+        pipeline = _build_pipeline(
+            embed_client, llm_client, bm25, qdrant, collection, gen_model=gen_model
+        )
 
         from castlerag.eval.run_eval import run_eval
         from castlerag.schemas import EvalQuestion
