@@ -25,9 +25,32 @@ preprocessing:
   chunks_dir: "/data/castle_derived/chunks"
 
 embedding:
+  # We serve a LoRA-merged + repackaged Thinker at /data/models/omniembed-multivent-vllm
+  # behind vLLM with --served-model-name omniembed; embed-time requests must use that
+  # alias rather than the upstream HF slug.
+  model: "omniembed"
   cache_dir: "/data/castle_derived/embeddings"
   vllm_tensor_parallel: 2
   vllm_gpu_memory_utilization: 0.88
+
+# Generation + reranking are served by vLLM running Qwen3-VL-4B-Instruct on
+# port 8201 (Qwen3-VL-8B does not fit alongside OmniEmbed on 2x16GB).  During
+# eval we run only this model and serve dense query vectors from a precomputed
+# OmniEmbed cache.
+generation:
+  model: "qwen3vl"
+  # Qwen3-VL-4B clusters predictions on the last option ('d') when forced to
+  # commit on weak evidence; deterministically permuting the four choices per
+  # question via sha1(question_id) breaks that positional bias while keeping
+  # the eval reproducible.
+  shuffle_choices: true
+reranking:
+  model: "qwen3vl"
+  # We only indexed day-1 hours 08-13, so even strong evidence often scores
+  # low.  Lowering min_relevance from 1 to 0 keeps weak packs in the rerank
+  # output, which materialises non-zero support priors for the fallback
+  # answer-extraction path instead of leaving every prior at 0.0.
+  min_relevance: 0
 
 qdrant:
   host: "localhost"

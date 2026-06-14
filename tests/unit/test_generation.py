@@ -10,6 +10,7 @@ from castlerag.generation.answer import (
     _format_timestamp,
     build_messages,
     build_prompt,
+    choice_permutation,
     extract_answer,
     generate_answer,
 )
@@ -123,6 +124,76 @@ def test_extract_answer_fallback_on_conflicting_final_answer_lines():
 
 def test_extract_answer_fallback_no_priors():
     assert extract_answer("no answer", {}) == "a"
+
+
+def test_extract_answer_abstain_uses_qid_hash_fallback():
+    raw = "Evidence is insufficient.\nFINAL_ANSWER: abstain"
+    # Deterministic uniform pick across a/b/c/d via sha1(question_id).
+    seen = {extract_answer(raw, {}, question_id=f"q{i:04d}") for i in range(64)}
+    assert seen == {"a", "b", "c", "d"}
+
+
+def test_extract_answer_abstain_prefers_strict_top_prior():
+    raw = "Confidence is low.\nFINAL_ANSWER: insufficient"
+    assert (
+        extract_answer(raw, {"a": 0.1, "b": 0.6, "c": 0.0, "d": 0.0}, question_id="q1")
+        == "b"
+    )
+
+
+def test_choice_permutation_is_a_bijection_and_deterministic():
+    perm = choice_permutation("2026_q0001")
+    assert set(perm.keys()) == set("abcd")
+    assert set(perm.values()) == set("abcd")
+    assert perm == choice_permutation("2026_q0001")
+
+
+def test_choice_permutation_is_not_identity_in_aggregate():
+    identity = {letter: letter for letter in "abcd"}
+    identical = sum(
+        choice_permutation(f"q{i:04d}") == identity for i in range(64)
+    )
+    # The identity permutation has 1/24 probability; far more than 1 of 64
+    # questions returning identity would indicate a bug, not bad luck.
+    assert identical <= 8
+
+
+def test_generate_answer_shuffle_maps_back_to_original_letter():
+    q = _make_question()  # a=Worked b=Slept c=Cooked d=Walked
+    hints = RouteHints(route="static_visual")
+
+    perm = choice_permutation(q.question_id)  # presented -> original
+    original_to_presented = {v: k for k, v in perm.items()}
+
+    target_original = "c"
+    target_presented = original_to_presented[target_original]
+
+    class _FixedReplyClient:
+        class chat:  # noqa: N801
+            class completions:  # noqa: N801
+                @staticmethod
+                def create(model, messages, max_tokens, temperature):  # noqa: D401
+                    class _Msg:
+                        content = f"FINAL_ANSWER: {target_presented}"
+
+                    class _Choice:
+                        message = _Msg()
+
+                    class _Resp:
+                        choices = [_Choice()]
+
+                    return _Resp()
+
+    prediction = generate_answer(
+        question=q,
+        hints=hints,
+        evidence_rows=[],
+        support_priors={},
+        llm_client=_FixedReplyClient(),
+        model="stub",
+        shuffle_choices=True,
+    )
+    assert prediction.predicted_answer == target_original
 
 
 def test_format_main_video_citation():
