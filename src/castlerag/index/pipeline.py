@@ -10,7 +10,7 @@ import numpy as np
 
 from castlerag import __version__
 from castlerag.config import CastleRAGConfig
-from castlerag.embed.omniembed import OmniEmbedClient, format_query_text
+from castlerag.embed.omniembed import OmniEmbedClient
 from castlerag.index.io import (
     load_aux_records,
     load_clip_records,
@@ -205,7 +205,15 @@ def cache_dense_embeddings(
         )
 
     if modality in (None, "video"):
-        clip_records = [row for row in scoped.clips if row.sampled_frame_paths]
+        # vLLM's /v1/embeddings is text-only, so the clip's textual surface
+        # (caption + transcript + OCR) gates inclusion rather than the presence
+        # of extracted frames.  embed_videos() already prepends "Query: " when
+        # it falls back to embed_texts(), so the payload is the raw text.
+        clip_records = [
+            row
+            for row in scoped.clips
+            if row.clip_caption or row.transcript_text or row.ocr_text
+        ]
         cache_paths.append(
             _cache_records(
                 name="clips",
@@ -213,10 +221,7 @@ def cache_dense_embeddings(
                 cache_path=cache_dir / f"clips{suffix}.npz",
                 embed_fn=embed_client.embed_videos,
                 batch_size=cfg.embedding.batch_sizes.video,
-                # vLLM's /v1/embeddings is text-only; fall back to the clip's
-                # textual surface (caption + transcript + OCR) which is what
-                # OmniEmbed effectively encodes anyway in this skeleton.
-                payload_fn=lambda row: format_query_text(
+                payload_fn=lambda row: (
                     " | ".join(
                         s for s in (
                             row.clip_caption,
@@ -241,7 +246,11 @@ def cache_dense_embeddings(
                 cache_path=cache_dir / f"aux_video{suffix}.npz",
                 embed_fn=embed_client.embed_videos,
                 batch_size=cfg.embedding.batch_sizes.video,
-                payload_fn=_aux_video_frames,
+                # Frame paths reach the text-only backend as a list, which
+                # falls back to the literal "Video clip" string and collapses
+                # every aux_video vector onto a single point.  Embed the
+                # record id instead so each row gets a distinct vector.
+                payload_fn=_aux_video_payload,
                 record_id_fn=lambda row: row.clip_id,
                 force=force,
             )
@@ -353,14 +362,13 @@ def build_qdrant_index(
         )
         point_ids = [row.point_id for row in payload_rows]
         payloads = [row.model_dump(exclude_none=True) for row in payload_rows]
-        vectors = artifact.vectors.tolist()
         for start in range(0, len(point_ids), upsert_chunk):
             stop = start + upsert_chunk
             upsert_batch(
                 client=client,
                 collection_name=cfg.qdrant.collection,
                 point_ids=point_ids[start:stop],
-                vectors=vectors[start:stop],
+                vectors=artifact.vectors[start:stop].tolist(),
                 payloads=payloads[start:stop],
             )
 
@@ -433,6 +441,25 @@ def _discover_vector_size(cache_artifacts: Iterable[CacheArtifact]) -> int:
         if artifact.vectors.size and artifact.vectors.ndim == 2:
             return int(artifact.vectors.shape[1])
     raise ValueError("Could not discover vector size from empty caches")
+
+
+def _aux_video_payload(record: Record) -> str:
+    """Render an aux video record as a unique text payload for text-only embed.
+
+    The text-only vLLM backend turns list payloads into the literal
+    ``"Video clip"`` string and collapses every aux video vector onto the
+    same point.  Returning a distinct per-record string (with the summary,
+    owner, and id) gives each row its own dense vector.
+    """
+    if not isinstance(record, AuxRecord):
+        return "Aux video clip"
+    parts = [
+        f"Aux video {record.source_type}",
+        record.summary_text or "",
+        record.aux_owner or "",
+        record.clip_id,
+    ]
+    return " | ".join(s for s in parts if s)
 
 
 def _aux_video_frames(record: Record) -> List[str]:

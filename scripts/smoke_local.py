@@ -161,10 +161,11 @@ def _build_real_clients(
 ) -> tuple[Any, Any]:
     """Return (embed_client, llm_client).
 
-    When `stub_embed` is True or `embed_url` is None, the embed client is a
-    stub that yields random unit vectors — useful when only one vLLM model
-    fits on the available GPUs and we want to exercise the chat path against
-    a real generation server.
+    When ``stub_embed`` is True, the embed client is a stub that yields random
+    unit vectors — useful when only one vLLM model fits on the available GPUs
+    and we want to exercise the chat path against a real generation server.
+    If ``stub_embed`` is False, ``embed_url`` is required; the call fails fast
+    rather than silently degrading to stub embeddings.
     """
     try:
         from openai import OpenAI
@@ -173,14 +174,19 @@ def _build_real_clients(
             "openai package required for --real mode: pip install openai\n"
             f"Original error: {exc}"
         )
-    if stub_embed or not embed_url:
+    if stub_embed:
         embed: Any = _StubEmbedClient()
-    else:
+    elif embed_url:
         from castlerag.embed.omniembed import OmniEmbedClient
         embed = OmniEmbedClient(
             model=embed_model,
             backend="vllm",
             vllm_base_url=embed_url,
+        )
+    else:
+        sys.exit(
+            "--real mode requires --embed-url (or VLLM_BASE_URL); pass "
+            "--stub-embed to opt into random unit vectors instead."
         )
     llm = OpenAI(base_url=gen_url, api_key="not-needed")
     return embed, llm

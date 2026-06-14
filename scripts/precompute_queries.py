@@ -87,7 +87,7 @@ def main() -> None:
     print(f"matrix shape: {matrix.shape}")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(args.out, keys=np.asarray(texts, dtype=object), vectors=matrix)
+    np.savez(args.out, keys=np.asarray(texts, dtype=str), vectors=matrix)
     print(f"wrote {args.out}")
 
 

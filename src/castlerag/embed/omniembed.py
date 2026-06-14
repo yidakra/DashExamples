@@ -24,7 +24,6 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-
 _POINT_NAMESPACE = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
 
@@ -111,7 +110,7 @@ class OmniEmbedClient:
         cache: Dict[str, np.ndarray] = {}
         path = self._query_cache_path
         if path and Path(path).exists():
-            with np.load(path, allow_pickle=True) as bundle:
+            with np.load(path, allow_pickle=False) as bundle:
                 keys = bundle["keys"].tolist()
                 vectors = bundle["vectors"]
                 cache = {k: vectors[i] for i, k in enumerate(keys)}
