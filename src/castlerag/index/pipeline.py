@@ -10,7 +10,7 @@ import numpy as np
 
 from castlerag import __version__
 from castlerag.config import CastleRAGConfig
-from castlerag.embed.omniembed import OmniEmbedClient
+from castlerag.embed.omniembed import OmniEmbedClient, format_query_text
 from castlerag.index.io import (
     load_aux_records,
     load_clip_records,
@@ -154,7 +154,9 @@ def filter_records(
 def build_bm25_artifact(records: LoadedArtifacts, out_dir: Path) -> Path:
     """Build the transcript BM25 artifact from normalized transcript windows."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    return build_bm25_index(records.transcripts, out_dir / "transcripts.pkl").index_path
+    out_path = out_dir / "transcripts.pkl"
+    build_bm25_index(records.transcripts, out_path)
+    return out_path
 
 
 def cache_dense_embeddings(
@@ -211,7 +213,18 @@ def cache_dense_embeddings(
                 cache_path=cache_dir / f"clips{suffix}.npz",
                 embed_fn=embed_client.embed_videos,
                 batch_size=cfg.embedding.batch_sizes.video,
-                payload_fn=lambda row: row.sampled_frame_paths,
+                # vLLM's /v1/embeddings is text-only; fall back to the clip's
+                # textual surface (caption + transcript + OCR) which is what
+                # OmniEmbed effectively encodes anyway in this skeleton.
+                payload_fn=lambda row: format_query_text(
+                    " | ".join(
+                        s for s in (
+                            row.clip_caption,
+                            row.transcript_text,
+                            row.ocr_text,
+                        ) if s
+                    ) or "Video clip"
+                ),
                 record_id_fn=lambda row: row.clip_id,
                 force=force,
             )
@@ -328,6 +341,9 @@ def build_qdrant_index(
         recreate=recreate,
     )
 
+    # Qdrant's REST POST body limit defaults to 32 MB; chunk upserts so a
+    # 3584-dim clip artifact (~64 KB/point with payload) stays well under it.
+    upsert_chunk = 256
     for artifact in cache_artifacts:
         payload_rows = build_point_batches(
             artifact.records,
@@ -337,13 +353,16 @@ def build_qdrant_index(
         )
         point_ids = [row.point_id for row in payload_rows]
         payloads = [row.model_dump(exclude_none=True) for row in payload_rows]
-        upsert_batch(
-            client=client,
-            collection_name=cfg.qdrant.collection,
-            point_ids=point_ids,
-            vectors=artifact.vectors.tolist(),
-            payloads=payloads,
-        )
+        vectors = artifact.vectors.tolist()
+        for start in range(0, len(point_ids), upsert_chunk):
+            stop = start + upsert_chunk
+            upsert_batch(
+                client=client,
+                collection_name=cfg.qdrant.collection,
+                point_ids=point_ids[start:stop],
+                vectors=vectors[start:stop],
+                payloads=payloads[start:stop],
+            )
 
     return vector_size, [artifact.path for artifact in cache_artifacts]
 
