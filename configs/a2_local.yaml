@@ -39,6 +39,11 @@ embedding:
 # OmniEmbed cache.
 generation:
   model: "qwen3vl"
+  # Qwen3-VL-4B clusters predictions on the last option ('d') when forced to
+  # commit on weak evidence; deterministically permuting the four choices per
+  # question via sha1(question_id) breaks that positional bias while keeping
+  # the eval reproducible.
+  shuffle_choices: true
 reranking:
   model: "qwen3vl"
   # We only indexed day-1 hours 08-13, so even strong evidence often scores

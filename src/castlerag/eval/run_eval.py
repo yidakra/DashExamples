@@ -334,6 +334,7 @@ def _build_default_pipeline(cfg: CastleRAGConfig) -> EvalPipeline:
             llm_client=generation_client,
             model=cfg.generation.model,
             max_evidence_rows=cfg.retrieval.max_evidence_rows,
+            shuffle_choices=cfg.generation.shuffle_choices,
         )
 
     return EvalPipeline(

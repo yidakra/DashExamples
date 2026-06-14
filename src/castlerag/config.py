@@ -105,6 +105,12 @@ class GenerationConfig(BaseModel):
     temperature: float = 0.0
     vllm_tensor_parallel: int = 1
     vllm_gpu_memory_utilization: float = 0.90
+    # When True, generate_answer presents the four answer choices in a
+    # deterministic per-question permutation (sha1(question_id)) and maps the
+    # model's predicted letter back to the original letter.  Counteracts the
+    # late-position bias that small multiple-choice models exhibit on weak
+    # evidence (Qwen3-VL-4B clusters predictions on 'd' otherwise).
+    shuffle_choices: bool = False
 
 
 class RerankingConfig(BaseModel):

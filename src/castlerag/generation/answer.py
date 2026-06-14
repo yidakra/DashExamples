@@ -350,6 +350,18 @@ def _call_generation_llm(llm_client: Any, messages: List[Dict[str, str]]) -> str
     )
 
 
+def choice_permutation(question_id: str) -> Dict[str, str]:
+    """Return a deterministic shuffle map presented_letter -> original_letter.
+
+    Uses sha1(question_id) so the same question always yields the same order,
+    keeping the eval reproducible while breaking the late-position bias that
+    small multiple-choice models exhibit on weak evidence.
+    """
+    digest = hashlib.sha1(question_id.encode("utf-8")).digest()
+    originals = sorted("abcd", key=lambda letter: digest[ord(letter) - ord("a")])
+    return dict(zip("abcd", originals))
+
+
 def generate_answer(
     question: EvalQuestion,
     hints: RouteHints,
@@ -358,20 +370,42 @@ def generate_answer(
     llm_client: Any,
     model: str = "Qwen/Qwen3-VL-8B-Instruct",
     max_evidence_rows: int = 50,
+    shuffle_choices: bool = False,
 ) -> Prediction:
     """Run grounded answer generation and return a normalized Prediction."""
     rows = evidence_rows[:max_evidence_rows]
+
+    if shuffle_choices:
+        presented_to_original = choice_permutation(question.question_id)
+        prompt_question = question.model_copy(
+            update={
+                "answers": {
+                    presented: question.answers[original]
+                    for presented, original in presented_to_original.items()
+                }
+            }
+        )
+        prompt_priors = {
+            presented: support_priors.get(original, 0.0)
+            for presented, original in presented_to_original.items()
+        }
+    else:
+        presented_to_original = {letter: letter for letter in "abcd"}
+        prompt_question = question
+        prompt_priors = support_priors
+
     messages = build_messages(
-        question=question,
+        question=prompt_question,
         hints=hints,
         evidence_rows=rows,
-        support_priors=support_priors,
+        support_priors=prompt_priors,
         max_evidence_rows=max_evidence_rows,
     )
     raw_answer_text = _call_generation_llm_with_model(llm_client, messages, model=model)
-    predicted_answer = extract_answer(
-        raw_answer_text, support_priors, question_id=question.question_id
+    presented_answer = extract_answer(
+        raw_answer_text, prompt_priors, question_id=question.question_id
     )
+    predicted_answer: AnswerChoice = presented_to_original[presented_answer]  # type: ignore[assignment]
     return Prediction(
         question_id=question.question_id,
         predicted_answer=predicted_answer,
